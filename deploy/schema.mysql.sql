@@ -20,7 +20,14 @@
 --   * opscore_inbound_raw.matched_incident_id -- a Phase-1 reply answers a reason prompt on an incident.
 --   * `condition` and `trigger` are reserved words in MySQL, kept as column names via backticks.
 
-CREATE TABLE opscore_assets (
+-- Every CREATE is IF NOT EXISTS so this file is RE-RUNNABLE. MySQL implicitly commits
+-- each DDL statement, so a migration cannot be atomic: if one fails partway (or the
+-- tables were imported by hand via phpMyAdmin), the opscore_schema_migrations row never gets
+-- written and the next boot would re-run the file. Without IF NOT EXISTS that boot dies
+-- on "Table 'opscore_assets' already exists" and the deployment is stuck with no way forward
+-- short of dropping tables by hand.
+
+CREATE TABLE IF NOT EXISTS opscore_assets (
   id          VARCHAR(128) NOT NULL,            -- "weaving:loom_23"
   department  VARCHAR(64)  NOT NULL,
   asset_ref   VARCHAR(64)  NOT NULL,            -- "loom_23"
@@ -30,7 +37,7 @@ CREATE TABLE opscore_assets (
   UNIQUE KEY uq_asset (department, asset_ref)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_incidents (
+CREATE TABLE IF NOT EXISTS opscore_incidents (
   id             BIGINT       NOT NULL AUTO_INCREMENT,
   asset_id       VARCHAR(128) NOT NULL,
   department     VARCHAR(64)  NOT NULL,
@@ -47,7 +54,7 @@ CREATE TABLE opscore_incidents (
   CONSTRAINT fk_inc_asset FOREIGN KEY (asset_id) REFERENCES opscore_assets(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_incident_reasons (
+CREATE TABLE IF NOT EXISTS opscore_incident_reasons (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   incident_id BIGINT      NOT NULL,
   code        VARCHAR(64) NOT NULL,             -- "weaving.electrical"
@@ -60,7 +67,7 @@ CREATE TABLE opscore_incident_reasons (
   CONSTRAINT fk_reason_inc FOREIGN KEY (incident_id) REFERENCES opscore_incidents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_tickets (
+CREATE TABLE IF NOT EXISTS opscore_tickets (
   id                BIGINT      NOT NULL AUTO_INCREMENT,
   incident_id       BIGINT      NOT NULL,
   department        VARCHAR(64) NOT NULL,
@@ -81,7 +88,7 @@ CREATE TABLE opscore_tickets (
   CONSTRAINT fk_tkt_inc FOREIGN KEY (incident_id) REFERENCES opscore_incidents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_escalations (
+CREATE TABLE IF NOT EXISTS opscore_escalations (
   id           BIGINT      NOT NULL AUTO_INCREMENT,
   ticket_id    BIGINT      NULL,                -- set once a ticket exists
   incident_id  BIGINT      NULL,                -- set for the pre-ticket "unknown" ladder
@@ -99,7 +106,7 @@ CREATE TABLE opscore_escalations (
   CONSTRAINT chk_esc_parent CHECK (ticket_id IS NOT NULL OR incident_id IS NOT NULL)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_outbox (
+CREATE TABLE IF NOT EXISTS opscore_outbox (
   id              BIGINT       NOT NULL AUTO_INCREMENT,
   channel         VARCHAR(16)  NOT NULL,        -- whatsapp | gchat | panel | log
   recipient       VARCHAR(191) NOT NULL,
@@ -115,7 +122,7 @@ CREATE TABLE opscore_outbox (
   KEY ix_out_due (status, next_try_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_inbound_raw (
+CREATE TABLE IF NOT EXISTS opscore_inbound_raw (
   id                  BIGINT      NOT NULL AUTO_INCREMENT,
   channel             VARCHAR(16) NOT NULL,
   received_at         CHAR(25)    NOT NULL,
@@ -125,7 +132,7 @@ CREATE TABLE opscore_inbound_raw (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE opscore_events (                            -- append-only, never updated, never deleted
+CREATE TABLE IF NOT EXISTS opscore_events (                            -- append-only, never updated, never deleted
   id         BIGINT      NOT NULL AUTO_INCREMENT,
   at         CHAR(25)    NOT NULL,
   department VARCHAR(64) NULL,
@@ -138,3 +145,13 @@ CREATE TABLE opscore_events (                            -- append-only, never u
   KEY ix_ev_entity (entity, entity_id),
   KEY ix_ev_at     (at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ===== bookkeeping =====
+CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
+  name VARCHAR(191) NOT NULL,
+  applied_at CHAR(25) NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('001_init.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));

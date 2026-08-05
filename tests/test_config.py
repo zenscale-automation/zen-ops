@@ -89,3 +89,34 @@ def test_live_mode_with_a_placeholder_roster_refuses_to_start(cfg):
     assert "placeholder" in msg and "ravi_k" in msg
     cfg.shadow_mode = True
     appconfig.validate(cfg)          # shadow mode: same roster validates fine
+
+
+# --- migrations must survive a half-finished run -------------------------------
+
+def test_migrate_recovers_when_tables_exist_but_bookkeeping_is_missing(cfg):
+    """MySQL commits each DDL statement implicitly, so a migration can never be atomic.
+    If it dies partway — or the schema was imported by hand via phpMyAdmin — the
+    schema_migrations row is never written and the next boot re-runs the file. That
+    must be harmless, not `(1050, "Table 'opscore_assets' already exists")`.
+    """
+    from app import db as appdb
+
+    appdb.migrate()                                   # normal first run
+    appdb.execute("DELETE FROM schema_migrations")    # simulate the interrupted run
+
+    applied = appdb.migrate()                         # must not raise
+    assert "001_init.sql" in applied
+    assert appdb.query_one("SELECT COUNT(*) n FROM schema_migrations")["n"] == 1
+    assert appdb.migrate() == []                      # and is idempotent thereafter
+
+
+def test_exported_schema_records_itself_so_a_hand_import_is_recognised(cfg):
+    """deploy/schema.mysql.sql is offered as a phpMyAdmin alternative to letting the app
+    migrate. If it doesn't write its own bookkeeping row the two paths disagree and the
+    app re-runs the migration on top of the imported tables."""
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parent.parent / "deploy" / "schema.mysql.sql").read_text()
+    assert "schema_migrations" in sql, "export must create the bookkeeping table"
+    assert "INSERT IGNORE INTO" in sql and "001_init.sql" in sql, \
+        "export must record each migration it contains"
+    assert "CREATE TABLE IF NOT EXISTS" in sql, "export must be re-runnable"

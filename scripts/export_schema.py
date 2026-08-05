@@ -34,6 +34,26 @@ def main():
         parts.append(f"-- ===== {path.name} =====")
         parts.append(sql.rstrip())
         parts.append("")
+    # A hand import must also RECORD itself, or the app's first boot re-runs the same
+    # migration and (before IF NOT EXISTS) died on "table already exists". The bookkeeping
+    # table and the INSERTs are what make "import by hand" and "let the app do it"
+    # genuinely interchangeable rather than two paths that quietly disagree.
+    names = sorted(p.name for p in (ROOT / "migrations").glob("*.sql"))
+    parts.append("-- ===== bookkeeping =====")
+    parts.append(
+        f"CREATE TABLE IF NOT EXISTS {prefix}schema_migrations (\n"
+        "  name VARCHAR(191) NOT NULL,\n"
+        "  applied_at CHAR(25) NOT NULL,\n"
+        "  PRIMARY KEY (name)\n"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n"
+    )
+    for n in names:
+        parts.append(
+            f"INSERT IGNORE INTO {prefix}schema_migrations(name, applied_at)\n"
+            f"  VALUES ('{n}', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));"
+        )
+    parts.append("")
+
     out = ROOT / "deploy" / "schema.mysql.sql"
     out.write_text("\n".join(parts), encoding="utf-8")
     print("wrote", out)

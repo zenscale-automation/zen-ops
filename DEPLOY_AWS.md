@@ -74,7 +74,7 @@ account is SELECT-only — the zenscale-mcp account may deliberately be — ask 
 write grant on `automation.*` before going further; nothing here touches
 `scaleshi_scaledb`.
 
-## 3b. Sanity-check the feed
+## 4. Sanity-check the feed
 
 The adapter's stop rules were audited against `loom_dashboard-10.html` and now match it
 exactly: running is `rpm >= 40` **and** both threads intact; `weft == 0` or `warp == 0`
@@ -102,14 +102,26 @@ that looks continuous rather than only 0 and ~300. If `machines seen` is well un
 the missing looms are invisible to monitoring until they transmit — ops-core logs a
 warning at seed for exactly this, using `expected_count` in `source.yaml`.
 
-## 4. Create the tables
+## 5. Create the tables
 
 Nothing to do — the app runs `migrations/` itself on first boot and records them in
-`opscore_schema_migrations`. If you'd rather see the DDL land through phpMyAdmin
-first, paste `deploy/schema.mysql.sql` (already prefix-applied) into the SQL tab of
-the `automation` database; boot then finds everything applied and skips it.
+`opscore_schema_migrations`. If you'd rather see the DDL land through phpMyAdmin first,
+paste `deploy/schema.mysql.sql` (already prefix-applied) into the SQL tab of the
+`automation` database; it creates the tables *and* writes its own bookkeeping row, so
+boot recognises the import and skips it.
 
-## 4b. Shadow mode
+Both paths are re-runnable. Every `CREATE` is `IF NOT EXISTS`, because MySQL commits
+each DDL statement implicitly and a migration therefore cannot be atomic — if one dies
+partway, the tables exist but the bookkeeping row does not, and the next boot re-runs
+the file. Re-running is now a no-op that repairs the bookkeeping instead of failing with
+`(1050, "Table 'opscore_assets' already exists")`.
+
+If you hit that 1050 error on an older copy, the tables are fine — it is only the
+bookkeeping that is missing. Pull the current `migrations/001_init.sql` and boot again;
+it will reconcile itself. On a first deploy with no data yet, dropping the `opscore_*`
+tables in phpMyAdmin and letting boot recreate them is equally safe.
+
+## 6. Shadow mode
 
 This deployment ships with `OPS_SHADOW_MODE=true`. The full pipeline runs — poll,
 classify, route, escalate, and write every event to MySQL — but no message goes out on
@@ -125,14 +137,13 @@ ops-core starts texting strangers. Two things make that impossible:
 - with shadow mode **off**, ops-core refuses to boot while any routed person still has
   `placeholder: true` — it fails loudly with the list, the same way a bad reason code does.
 
-Confirm it: `curl -s localhost:8000/health | grep shadow_mode` and the WARNING line in
-`logs/stdout.log` at every start.
+Nothing to do here — it is already set in `.env`. Step 8 confirms it once the app is up.
 
 Going live later is three steps: replace the people block in `routing.yaml` with the real
 roster and drop the `placeholder` flags, set the channel credentials in `.env`, then set
 `OPS_SHADOW_MODE=false` and restart.
 
-## 4c. Fleet size — retune as looms come online
+## 7. Fleet size — retune as looms come online
 
 Only looms **91-94** are on the API today; the other 40 are planned. Two settings are
 tied to that number and both are already set for a fleet of four:
@@ -149,19 +160,34 @@ the supervisor, whereas a threshold set too low silences genuine faults. Two tes
 `tests/test_classify.py` pin both directions at the current fleet size and will fail if
 `fleet_fraction` drifts back down before the fleet grows.
 
-## 5. First run, foreground
+## 8. First run, foreground
 
 ```bash
 cd ~/zen-ops && .venv/bin/python -m app.main
 ```
 
 Boot is loud on purpose: a config typo or a refused DB connection kills it with the
-reason. Healthy looks like `ops-core serving on http://127.0.0.1:8000`. From a second
-shell on the box: `curl -s localhost:8000/health` — expect `"ok": true` and both
-worker heartbeats. Check `automation` in phpMyAdmin: nine `opscore_*` tables. Within
-a poll cycle (30 s), `opscore_assets` fills with the discovered looms. Ctrl-C.
+reason. Two lines you should see immediately:
 
-## 6. Install as a service
+```
+WARNING ops SHADOW MODE — no message will be sent on any channel ...
+INFO    ops ops-core serving on http://127.0.0.1:8000
+```
+
+If the SHADOW MODE line says LIVE MODE instead, stop and fix `.env` before going
+further — the placeholder roster guard should have prevented boot, so something is off.
+
+From a second shell on the box, with the app still running:
+
+```bash
+curl -s localhost:8000/health          # "ok": true, "shadow_mode": true, both workers
+```
+
+Then check `automation` in phpMyAdmin: nine `opscore_*` tables. Within a poll cycle
+(30 s) `opscore_assets` fills with the discovered looms — expect looms 91-94. If fewer
+appear, the seed warning in the same log says how many reported. Ctrl-C when done.
+
+## 9. Install as a service
 
 ```bash
 # The unit hardcodes /home/ubuntu/ops-core; rewrite it to wherever this actually lives.
@@ -185,7 +211,7 @@ curl -s localhost:8000/health
 **Exactly one instance.** This box is now the one place ops-core runs. Don't also
 start it on the plant server against the same database — every notification doubles.
 
-## 7. Reaching the dashboard
+## 10. Reaching the dashboard
 
 The app binds 127.0.0.1 only; nothing is exposed on the EC2 public IP and no
 security-group change is needed. Two options, use either:
@@ -207,7 +233,7 @@ tailscale serve status   # prints the https://<machine>.<tailnet>.ts.net URL
 The bundled `deploy/nginx.conf` is for the on-prem/public-TLS variant and isn't
 needed in either option; skip it.
 
-## 8. Day-2
+## 11. Day-2
 
 Logs: `~/zen-ops/logs/stdout.log`, `stderr.log`, and every outbound message in
 `logs/notifications.log` (log notifier is the default until WhatsApp/GChat

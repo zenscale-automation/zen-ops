@@ -14,7 +14,14 @@
 --   * inbound_raw.matched_incident_id -- a Phase-1 reply answers a reason prompt on an incident.
 --   * `condition` and `trigger` are reserved words in MySQL, kept as column names via backticks.
 
-CREATE TABLE assets (
+-- Every CREATE is IF NOT EXISTS so this file is RE-RUNNABLE. MySQL implicitly commits
+-- each DDL statement, so a migration cannot be atomic: if one fails partway (or the
+-- tables were imported by hand via phpMyAdmin), the schema_migrations row never gets
+-- written and the next boot would re-run the file. Without IF NOT EXISTS that boot dies
+-- on "Table 'assets' already exists" and the deployment is stuck with no way forward
+-- short of dropping tables by hand.
+
+CREATE TABLE IF NOT EXISTS assets (
   id          VARCHAR(128) NOT NULL,            -- "weaving:loom_23"
   department  VARCHAR(64)  NOT NULL,
   asset_ref   VARCHAR(64)  NOT NULL,            -- "loom_23"
@@ -24,7 +31,7 @@ CREATE TABLE assets (
   UNIQUE KEY uq_asset (department, asset_ref)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE incidents (
+CREATE TABLE IF NOT EXISTS incidents (
   id             BIGINT       NOT NULL AUTO_INCREMENT,
   asset_id       VARCHAR(128) NOT NULL,
   department     VARCHAR(64)  NOT NULL,
@@ -41,7 +48,7 @@ CREATE TABLE incidents (
   CONSTRAINT fk_inc_asset FOREIGN KEY (asset_id) REFERENCES assets(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE incident_reasons (
+CREATE TABLE IF NOT EXISTS incident_reasons (
   id          BIGINT      NOT NULL AUTO_INCREMENT,
   incident_id BIGINT      NOT NULL,
   code        VARCHAR(64) NOT NULL,             -- "weaving.electrical"
@@ -54,7 +61,7 @@ CREATE TABLE incident_reasons (
   CONSTRAINT fk_reason_inc FOREIGN KEY (incident_id) REFERENCES incidents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE tickets (
+CREATE TABLE IF NOT EXISTS tickets (
   id                BIGINT      NOT NULL AUTO_INCREMENT,
   incident_id       BIGINT      NOT NULL,
   department        VARCHAR(64) NOT NULL,
@@ -75,7 +82,7 @@ CREATE TABLE tickets (
   CONSTRAINT fk_tkt_inc FOREIGN KEY (incident_id) REFERENCES incidents(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE escalations (
+CREATE TABLE IF NOT EXISTS escalations (
   id           BIGINT      NOT NULL AUTO_INCREMENT,
   ticket_id    BIGINT      NULL,                -- set once a ticket exists
   incident_id  BIGINT      NULL,                -- set for the pre-ticket "unknown" ladder
@@ -93,7 +100,7 @@ CREATE TABLE escalations (
   CONSTRAINT chk_esc_parent CHECK (ticket_id IS NOT NULL OR incident_id IS NOT NULL)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE outbox (
+CREATE TABLE IF NOT EXISTS outbox (
   id              BIGINT       NOT NULL AUTO_INCREMENT,
   channel         VARCHAR(16)  NOT NULL,        -- whatsapp | gchat | panel | log
   recipient       VARCHAR(191) NOT NULL,
@@ -109,7 +116,7 @@ CREATE TABLE outbox (
   KEY ix_out_due (status, next_try_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE inbound_raw (
+CREATE TABLE IF NOT EXISTS inbound_raw (
   id                  BIGINT      NOT NULL AUTO_INCREMENT,
   channel             VARCHAR(16) NOT NULL,
   received_at         CHAR(25)    NOT NULL,
@@ -119,7 +126,7 @@ CREATE TABLE inbound_raw (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE events (                            -- append-only, never updated, never deleted
+CREATE TABLE IF NOT EXISTS events (                            -- append-only, never updated, never deleted
   id         BIGINT      NOT NULL AUTO_INCREMENT,
   at         CHAR(25)    NOT NULL,
   department VARCHAR(64) NULL,
