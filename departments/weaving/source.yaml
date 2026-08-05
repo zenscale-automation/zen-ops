@@ -56,6 +56,14 @@ settings:
   # before anyone notices it is missing from the dashboard.
   expected_count: 4                # warn at seed if fewer machines are reporting
 
+  # A loom already stopped when ops-core starts is down with nobody told — the exact
+  # failure this system exists to remove. Open an incident for it on the first poll
+  # rather than waiting for it to run and stop again. This also means a service restart
+  # catches up on whatever went down during the outage instead of amnestying it.
+  # Duration is measured from first poll: ops-core cannot know how long a loom was down
+  # before it started watching. Set false to stay silent about pre-existing stops.
+  open_incidents_for_stopped_at_start: true
+
 assets:
   discover: true                   # derive the loom list from observed machines
   exclude: [loom_99_test]          # skip test looms (matched on asset_ref or machine number)

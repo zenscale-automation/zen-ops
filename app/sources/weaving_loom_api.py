@@ -69,6 +69,7 @@ class WeavingLoomApiSource:
         # or the network is down, not the loom. Silence must not read as "running".
         self.offline_after_seconds = int(s.get("offline_after_seconds", 180) or 0)
         self.expected_count = int(s.get("expected_count", 0) or 0)
+        self.open_stopped_at_start = bool(s.get("open_incidents_for_stopped_at_start", True))
         assets = cfg.source.get("assets", {}) or {}
         self.exclude = set(assets.get("exclude", []) or [])
         self.discover = bool(assets.get("discover", True))
@@ -188,14 +189,33 @@ class WeavingLoomApiSource:
 
     # --- source protocol -------------------------------------------------------
     def seed(self) -> None:
-        """Establish the cursor and current per-machine state without emitting anything.
-        Machines with an open/resolving incident are forced to STOPPED so a resume during
-        downtime is detected on the next poll (Rule 1: restart resumes cleanly)."""
+        """Establish the cursor and the current per-machine state.
+
+        A loom that is ALREADY STOPPED when ops-core starts is the whole point of the
+        system in miniature: it is down and nobody has been told. Marking it STOPPED here
+        would make the first poll see no transition, so no incident would ever open — the
+        loom would stay invisible until it ran and stopped again. Worse, every service
+        restart would amnesty whatever went down during the outage, which is exactly the
+        window where catching up matters most.
+
+        So a stopped loom with no open incident is left UNSET, and the first poll's
+        ordinary diff opens the incident. Machines that already have an open/resolving
+        incident are forced to STOPPED, so a restart resumes them rather than duplicating
+        (Rule 1). ops-core cannot know how long a loom was down before it started
+        watching, so the incident is stamped at first poll — durations measure observed
+        downtime, not total downtime.
+        """
+        stopped_at_seed: list[str] = []
         try:
             latest, to = self._collect(None)  # no `since` => server defaults to ~last minute
             for machine, row in latest.items():
                 ref = self._ref(machine)
-                self._last[ref] = "STOPPED" if self._is_stopped(row) else "RUNNING"
+                if self._is_stopped(row):
+                    stopped_at_seed.append(ref)
+                    if not self.open_stopped_at_start:
+                        self._last[ref] = "STOPPED"   # legacy behaviour: stay quiet
+                else:
+                    self._last[ref] = "RUNNING"
                 ts = row.get(self.ts_field, "")
                 if ts:
                     self._last_seen[ref] = ts
@@ -210,12 +230,31 @@ class WeavingLoomApiSource:
                 self._cursor = to
         except Exception:
             log.exception("loom API seed failed (worker will keep polling)")
+        # Anything with an incident already open is resumed, not re-opened (Rule 1).
+        already_open = set()
         for r in db.query(
             "SELECT a.asset_ref FROM incidents i JOIN assets a ON a.id=i.asset_id"
             " WHERE i.department=? AND i.status IN ('open','resolving')",
             (self.department,),
         ):
             self._last[r["asset_ref"]] = "STOPPED"
+            already_open.add(r["asset_ref"])
+
+        fresh = [r for r in stopped_at_seed if r not in already_open]
+        if fresh and self.open_stopped_at_start:
+            log.warning(
+                "%d loom(s) already stopped at start with no open incident (%s) — "
+                "incidents will open on the first poll. Duration is measured from now; "
+                "ops-core cannot know how long they were down before it started.",
+                len(fresh), ", ".join(sorted(fresh)),
+            )
+        elif fresh:
+            log.warning(
+                "%d loom(s) already stopped at start (%s) — NOT opening incidents "
+                "(open_incidents_for_stopped_at_start is false in source.yaml). They "
+                "stay invisible until they run and stop again.",
+                len(fresh), ", ".join(sorted(fresh)),
+            )
 
     def discover_assets(self) -> list[dict]:
         if not self.discover:

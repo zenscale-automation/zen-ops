@@ -185,7 +185,24 @@ curl -s localhost:8000/health          # "ok": true, "shadow_mode": true, both w
 
 Then check `automation` in phpMyAdmin: nine `opscore_*` tables. Within a poll cycle
 (30 s) `opscore_assets` fills with the discovered looms — expect looms 91-94. If fewer
-appear, the seed warning in the same log says how many reported. Ctrl-C when done.
+appear, the seed warning in the same log says how many reported.
+
+If any loom is **already stopped** when you start, the log names it:
+
+```
+WARNING ops.source.loom 2 loom(s) already stopped at start with no open incident
+        (loom_91, loom_93) — incidents will open on the first poll ...
+```
+
+That is correct: a loom that is down with nobody told is the failure this system exists
+to remove, so ops-core opens an incident rather than waiting for the loom to run and
+stop again. It also means a service restart catches up on whatever went down during the
+outage. Duration is measured from the first poll — ops-core cannot know how long a loom
+was down before it started watching, so these incidents understate total downtime.
+
+Cross-check the dashboard against `loom_dashboard.html`: the two should agree on which
+looms are down. If ops-core shows fewer looms down, that warning line is where to look.
+Ctrl-C when done.
 
 ## 9. Install as a service
 
