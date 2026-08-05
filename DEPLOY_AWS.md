@@ -21,7 +21,9 @@ From your laptop:
 scp ops-core.zip ubuntu@<EC2-IP>:~
 ```
 
-On the box:
+On the box (this deployment lives in `~/zen-ops`; unzip preserves dotfiles, `cp dir/*`
+does not — `.env.aws` and `.gitignore` are dotfiles and will be silently dropped by a
+glob copy):
 
 ```bash
 cd ~ && unzip -o ops-core.zip && cd ops-core
@@ -45,12 +47,13 @@ API guide; it's the same key the loom dashboard uses).
 Both legs, from the box itself:
 
 ```bash
-cd ~/ops-core
+cd ~/zen-ops
 
 # MySQL: connect, confirm the automation db, confirm write grants
 .venv/bin/python - << 'EOF'
 import os, pymysql
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
+load_dotenv(".env")   # explicit: find_dotenv() walks the call stack and fails on stdin
 c = pymysql.connect(host=os.environ["OPS_DB_HOST"], port=int(os.environ["OPS_DB_PORT"]),
                     user=os.environ["OPS_DB_USER"], password=os.environ["OPS_DB_PASSWORD"],
                     database=os.environ["OPS_DB_NAME"])
@@ -80,7 +83,7 @@ dashboard's own `isThreadStop`, so there is nothing left to guess — but it cos
 command to confirm the feed looks like the shed you expect:
 
 ```bash
-cd ~/ops-core
+cd ~/zen-ops
 KEY=$(grep '^LOOM_API_KEY' .env | cut -d= -f2)
 curl -s -H "X-API-Key: $KEY" 'https://cldserver.tailf33eb4.ts.net/data?limit=2000' \
   | python3 -c "
@@ -149,7 +152,7 @@ the supervisor, whereas a threshold set too low silences genuine faults. Two tes
 ## 5. First run, foreground
 
 ```bash
-cd ~/ops-core && .venv/bin/python -m app.main
+cd ~/zen-ops && .venv/bin/python -m app.main
 ```
 
 Boot is loud on purpose: a config typo or a refused DB connection kills it with the
@@ -161,7 +164,10 @@ a poll cycle (30 s), `opscore_assets` fills with the discovered looms. Ctrl-C.
 ## 6. Install as a service
 
 ```bash
-sudo cp deploy/ops-core.aws.service /etc/systemd/system/ops-core.service
+# The unit hardcodes /home/ubuntu/ops-core; rewrite it to wherever this actually lives.
+sudo sed "s#/home/ubuntu/ops-core#${PWD}#g" deploy/ops-core.aws.service \
+  | sudo tee /etc/systemd/system/ops-core.service > /dev/null
+grep -E 'WorkingDirectory|ExecStart' /etc/systemd/system/ops-core.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now ops-core
 systemctl status ops-core --no-pager
@@ -203,7 +209,7 @@ needed in either option; skip it.
 
 ## 8. Day-2
 
-Logs: `~/ops-core/logs/stdout.log`, `stderr.log`, and every outbound message in
+Logs: `~/zen-ops/logs/stdout.log`, `stderr.log`, and every outbound message in
 `logs/notifications.log` (log notifier is the default until WhatsApp/GChat
 credentials go into `.env`). Restart after any YAML edit:
 `sudo systemctl restart ops-core` — timers are rows, in-flight incidents resume.
