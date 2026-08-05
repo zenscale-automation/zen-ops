@@ -1,0 +1,118 @@
+department: weaving
+asset_type: loom
+
+defaults:
+  min_duration_seconds: 120    # shorter stops auto-code, never prompt
+  prompt_after_minutes: 15     # unknown stop -> ask
+  reprompt_after_minutes: 15   # no answer -> escalate instead
+
+auto_classify:                 # evaluated in order, first match wins
+  - code: power_failure
+    rule: fleet_stop
+    within_seconds: 5
+  - code: shift_change
+    rule: fleet_stop_at_boundary
+    window_minutes: 20
+  - code: weaving.punch_queue
+    rule: fleet_stop_at_boundary
+    window_minutes: 45
+  - code: short_stop
+    rule: duration_under
+    seconds: 120
+
+# fleet_stop / fleet_stop_at_boundary need a "how many looms is fleet-wide"
+# threshold. The design doc leaves this to measurement; default to half the active
+# fleet, overridable here. (Documented deviation — see README.)
+fleet_fraction: 0.5
+
+codes:
+  - code: weaving.electrical
+    label:
+      en: Electrical fault
+      hi: बिजली की खराबी
+    ticketable: true
+    owner: electrician
+    expected_minutes: 30
+    show_in_prompt: true
+
+  - code: weaving.mechanical
+    label:
+      en: Machine fault
+      hi: मशीन की खराबी
+    ticketable: true
+    owner: fitter
+    expected_minutes: 45
+    show_in_prompt: true
+
+  - code: weaving.yarn_not_arrived
+    label:
+      en: Yarn not arrived
+      hi: धागा नहीं आया
+    ticketable: true
+    owner: yarn_store
+    expected_minutes: 20
+    show_in_prompt: true
+
+  - code: weaving.beam_change
+    label:
+      en: Beam change / gaiting
+      hi: बीम बदलना
+    ticketable: false            # planned work, not a fault
+    expected_minutes: 90
+    show_in_prompt: true
+
+  - code: weaving.doffing
+    label: { en: Doffing / roll change }
+    ticketable: false
+    expected_minutes: 15
+
+  - code: weaving.operator_elsewhere
+    label: { en: Operator on another loom }
+    ticketable: false
+    expected_minutes: 10
+
+  - code: weaving.operator_absent
+    label: { en: No operator assigned }
+    ticketable: true
+    owner: supervisor
+    expected_minutes: 20
+
+  - code: weaving.cloth_fault
+    label:
+      en: Cloth fault
+      hi: कपड़े में खराबी
+    ticketable: false
+    expected_minutes: 5
+    subcodes:                    # second screen on the panel (Phase 2)
+      - { code: float,        label: { en: Float } }
+      - { code: khonk,        label: { en: Khonk } }
+      - { code: double_pick,  label: { en: Broken / double pick } }
+      - { code: losing,       label: { en: Losing } }
+      - { code: damage,       label: { en: Damage } }
+
+  - code: weaving.punch_queue
+    label:
+      en: Waiting at punch station
+      hi: पंच स्टेशन पर लाइन
+    ticketable: false            # nobody to page - a queue, not a fault
+    expected_minutes: 12
+
+  - code: power_failure
+    label: { en: Power failure }
+    ticketable: false
+    expected_minutes: 0
+
+  - code: shift_change
+    label: { en: Shift changeover }
+    ticketable: false
+    expected_minutes: 10
+
+  - code: short_stop
+    label: { en: Short stop, operator attended }
+    ticketable: false
+    expected_minutes: 1
+
+  - code: weaving.other
+    label: { en: Other }
+    ticketable: false            # free "Other" pick from the prompt; record-only
+    expected_minutes: 0

@@ -1,0 +1,60 @@
+"""Flask application factory + waitress entrypoint.
+
+Lifespan: load + validate config (fails loud on a bad reason/route), connect to MySQL and
+apply migrations, register the API, serve the dashboard, and — when run as a server —
+start the background workers. Served by waitress (pure-Python WSGI), which suits the
+Windows/NSSM on-prem target and sits behind the same nginx config as the design.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from flask import Flask, redirect, send_from_directory
+
+from . import config, db
+from .api.health import bp as health_bp
+from .api.query import bp as query_bp
+from .api.webhooks import bp as webhooks_bp
+from .workers import SUPERVISOR
+
+
+def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) -> Flask:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    cfg = cfg or config.load()
+    db.init(cfg.db_params(), cfg.table_prefix)
+
+    app = Flask(__name__, static_folder="static", static_url_path="/static")
+    app.config["OPS_CFG"] = cfg
+    app.register_blueprint(health_bp)
+    app.register_blueprint(webhooks_bp)
+    app.register_blueprint(query_bp)
+
+    @app.get("/")
+    def index():
+        return send_from_directory(app.static_folder, "dashboard.html")
+
+    @app.get("/dashboard")
+    def dashboard():
+        return redirect("/")
+
+    if start_workers:
+        SUPERVISOR.start(cfg)
+
+    return app
+
+
+def serve() -> None:
+    cfg = config.load()
+    app = create_app(start_workers=True, cfg=cfg)
+    from waitress import serve as waitress_serve
+
+    logging.getLogger("ops").info("ops-core serving on http://%s:%s", cfg.host, cfg.port)
+    waitress_serve(app, host=cfg.host, port=cfg.port, threads=8)
+
+
+if __name__ == "__main__":
+    serve()

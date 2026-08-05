@@ -1,0 +1,35 @@
+department: weaving
+
+# Timers are keyed off the reason, not a single global clock. 15 minutes is reasonable
+# for an unknown stop; once the reason is "electrical fault" the useful escalation is
+# against how long an electrician *should* take. "owner" == the ticket's own owner_role.
+ladders:
+  default:
+    - { after_minutes: 0,  notify: owner }
+    - { after_minutes: 15, notify: supervisor }
+    - { after_minutes: 40, notify: shift_incharge }
+
+  weaving.electrical:
+    - { after_minutes: 0,  notify: owner }
+    - { after_minutes: 20, notify: supervisor }
+    - { after_minutes: 45, notify: shift_incharge }
+
+  weaving.mechanical:
+    - { after_minutes: 0,  notify: owner }
+    - { after_minutes: 30, notify: supervisor }
+    - { after_minutes: 60, notify: shift_incharge }
+
+  # The "unknown" ladder is the entire Phase-1 WhatsApp flow expressed as configuration
+  # — no separate code path. action: ask_reason sends the numbered reason prompt.
+  unknown:
+    - { after_minutes: 15, notify: supervisor,     action: ask_reason }
+    - { after_minutes: 30, notify: supervisor,     action: ask_reason }
+    - { after_minutes: 45, notify: shift_incharge }
+
+recurrence:
+  window_hours: 8
+  threshold: 3                    # same asset + same code
+  action: skip_to_rung
+  rung: 2
+
+quiet_hours: none                 # three-shift plant, never quiet

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ops-core — weaving</title>
+<style>
+  :root {
+    --page:#f9f9f7; --surface:#fcfcfb; --text:#0b0b0b; --text-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --series:#2a78d6; --series-soft:#cde2fb;
+    --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme:dark){ :root:where(:not([data-theme="light"])){
+    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+    --series:#3987e5; --series-soft:#184f95; color-scheme:dark; } }
+  :root[data-theme="dark"]{
+    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,0.10);
+    --series:#3987e5; --series-soft:#184f95; color-scheme:dark; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.45}
+  header{display:flex;align-items:center;gap:16px;padding:16px 22px;border-bottom:1px solid var(--border);
+    background:var(--surface);position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.2px}
+  header .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  header .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);
+    border:1px solid var(--border);border-radius:999px;padding:5px 11px;background:var(--page)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--good)} .dot.bad{background:var(--critical)}
+  button.toggle{font:inherit;font-size:12px;color:var(--text-2);background:var(--page);
+    border:1px solid var(--border);border-radius:999px;padding:5px 11px;cursor:pointer}
+  main{padding:20px 22px;max-width:1280px;margin:0 auto}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .tile .v{font-size:30px;font-weight:650;margin-top:6px;letter-spacing:-.5px}
+  .tile .u{font-size:12px;color:var(--text-2);margin-top:2px}
+  .tile .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;margin-top:6px;color:var(--text-2)}
+  .cols{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
+  @media (max-width:940px){.cols{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+  .card h2{font-size:13px;margin:0 0 2px;font-weight:650}
+  .card .cap{font-size:12px;color:var(--muted);margin-bottom:14px}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--grid);font-size:13px;vertical-align:middle}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text-2)}
+  .tag.rung1{color:var(--warning)} .tag.rung2{color:var(--critical);font-weight:600}
+  .empty{color:var(--muted);font-size:13px;padding:12px 4px}
+  /* bar chart */
+  .bars{display:flex;flex-direction:column;gap:9px}
+  .bar-row{display:grid;grid-template-columns:130px 1fr 62px;align-items:center;gap:10px}
+  .bar-label{font-size:12.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar-track{position:relative;height:16px;background:var(--series-soft);border-radius:4px;opacity:.55}
+  .bar-fill{position:absolute;inset:0 auto 0 0;background:var(--series);border-radius:4px;min-width:3px;
+    transition:width .4s ease}
+  .bar-val{font-size:12.5px;color:var(--text);text-align:right;font-variant-numeric:tabular-nums}
+  .bar-row:hover .bar-fill{filter:brightness(1.08)}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin:8px 0 24px}
+  .live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);
+    margin-right:6px;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ops-core · weaving</h1>
+    <div class="sub">Fault escalation &amp; downtime accountability</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill"><span id="clock">—</span> IST</span>
+  <span class="pill"><span id="healthDot" class="dot"></span><span id="healthTxt">checking…</span></span>
+  <button class="toggle" id="themeBtn">◐ theme</button>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+
+  <div class="cols">
+    <div>
+      <div class="card">
+        <h2>Open tickets</h2>
+        <div class="cap">Faults routed to a person and waiting on attendance. Rung shows how far up the ladder it has climbed.</div>
+        <div id="tickets"></div>
+      </div>
+      <div class="card">
+        <h2>Currently down</h2>
+        <div class="cap">Assets with an open incident — including short stops still inside the reason-prompt window.</div>
+        <div id="incidents"></div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Downtime by reason</h2>
+        <div class="cap">Resolved incidents, last 24 hours. Minutes of lost loom time.</div>
+        <div class="bars" id="downtime"></div>
+      </div>
+      <div class="card">
+        <h2>By shift</h2>
+        <div class="cap">Where the lost time landed, last 24 hours.</div>
+        <div class="bars" id="byshift"></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="live"></span>Live — refreshes every 10s. <span id="updated"></span></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n === null || n === undefined) ? "—" : (typeof n === "number" ? n.toLocaleString() : n);
+
+function setTheme(t){ document.documentElement.setAttribute("data-theme", t); }
+$("themeBtn").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  setTheme(cur === "dark" ? "light" : "dark");
+};
+
+async function getJSON(u){ const r = await fetch(u,{cache:"no-store"}); if(!r.ok) throw new Error(u); return r.json(); }
+
+function statusColor(loomsDown){ return loomsDown > 0 ? "var(--critical)" : "var(--good)"; }
+
+function kpiTiles(o){
+  const down = o.looms_down || 0;
+  const tiles = [
+    {k:"Looms down", v:down, u:"right now",
+     status:`<span class="status"><span class="dot" style="background:${statusColor(down)}"></span>${down>0?"attention":"all running"}</span>`},
+    {k:"Open tickets", v:o.open_tickets||0, u:"awaiting a person"},
+    {k:"Reason prompts", v:o.pending_reason_prompts||0, u:"awaiting a reply"},
+    {k:"Downtime 24h", v:fmt(o.downtime_minutes_24h||0), u:"loom-minutes lost"},
+    {k:"Mean stop 24h", v:fmt(o.mean_stop_minutes_24h||0), u:`min · ${o.incidents_24h||0} incidents`},
+  ];
+  $("kpis").innerHTML = tiles.map(t=>`
+    <div class="tile"><div class="k">${t.k}</div><div class="v">${t.v}</div>
+    <div class="u">${t.u}</div>${t.status||""}</div>`).join("");
+}
+
+function ticketRows(rows){
+  if(!rows.length){ $("tickets").innerHTML = `<div class="empty">No open tickets — nothing is waiting on a person.</div>`; return; }
+  const body = rows.map(t=>{
+    const rung = t.cur_rung===null||t.cur_rung===undefined ? "—" :
+      `<span class="tag rung${t.cur_rung}">rung ${t.cur_rung}</span>`;
+    return `<tr>
+      <td><strong>${t.asset_ref.replace("_"," ")}</strong></td>
+      <td>${t.label}</td>
+      <td>${t.owner_role}</td>
+      <td class="num">${fmt(t.minutes_open)}</td>
+      <td>${rung}${t.reopen_count?` <span class="tag">×${t.reopen_count} reopen</span>`:""}</td>
+    </tr>`;}).join("");
+  $("tickets").innerHTML = `<table><thead><tr>
+    <th>Asset</th><th>Reason</th><th>Owner</th><th class="num">Min open</th><th>Escalation</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function incidentRows(rows){
+  if(!rows.length){ $("incidents").innerHTML = `<div class="empty">Every loom is running.</div>`; return; }
+  const body = rows.map(i=>`<tr>
+      <td><strong>${i.asset_ref.replace("_"," ")}</strong></td>
+      <td>${i.label || '<span style="color:var(--muted)">awaiting reason</span>'}</td>
+      <td>${i.shift||"—"}</td>
+      <td><span class="tag">${i.status}</span></td>
+      <td class="num">${fmt(i.minutes_down)}</td>
+    </tr>`).join("");
+  $("incidents").innerHTML = `<table><thead><tr>
+    <th>Asset</th><th>Reason</th><th>Shift</th><th>State</th><th class="num">Min down</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function barChart(el, rows, labelKey){
+  if(!rows.length){ el.innerHTML = `<div class="empty">No resolved downtime in this window.</div>`; return; }
+  const max = Math.max(...rows.map(r=>r.minutes), 1);
+  el.innerHTML = rows.map(r=>{
+    const name = labelKey==="code" ? r.label : ("Shift "+r.shift);
+    const w = Math.max(3, Math.round(r.minutes/max*100));
+    const tip = `${name}: ${r.minutes} min across ${r.count} incident(s)`;
+    return `<div class="bar-row" title="${tip}">
+      <div class="bar-label" title="${name}">${name}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%"></div></div>
+      <div class="bar-val">${r.minutes}</div>
+    </div>`;}).join("");
+}
+
+async function refresh(){
+  try{
+    const [ov, tk, inc, dt, health] = await Promise.all([
+      getJSON("/api/overview"), getJSON("/api/tickets/open"),
+      getJSON("/api/incidents/open"), getJSON("/api/downtime"),
+      getJSON("/health").catch(()=>({ok:false})),
+    ]);
+    kpiTiles(ov);
+    ticketRows(tk.tickets||[]);
+    incidentRows(inc.incidents||[]);
+    barChart($("downtime"), (dt.by_reason||[]).slice(0,8), "code");
+    barChart($("byshift"), dt.by_shift||[], "shift");
+    $("healthDot").className = "dot " + (health.ok ? "ok":"bad");
+    $("healthTxt").textContent = health.ok ? "healthy" : "degraded";
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata"});
+  }catch(e){
+    $("healthDot").className = "dot bad"; $("healthTxt").textContent = "unreachable";
+  }
+}
+
+function tickClock(){
+  $("clock").textContent = new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour12:false});
+}
+setInterval(tickClock, 1000); tickClock();
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>

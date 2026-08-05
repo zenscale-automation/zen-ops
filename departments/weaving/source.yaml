@@ -1,0 +1,58 @@
+department: weaving
+adapter: weaving_loom_api
+
+settings:
+  # The real Shingora Loom Data API. base_url may be overridden by LOOM_API_BASE_URL
+  # (e.g. pointed at the bundled mock during local testing).
+  base_url: https://cldserver.tailf33eb4.ts.net
+  api_key_env: LOOM_API_KEY        # sent as the X-API-Key header; never the key itself here
+  data_path: /data
+  health_path: /health
+  poll_seconds: 30
+
+  # The API is a time-series, not a status snapshot: "stopped" is derived.
+  machine_field: machine           # the loom number, e.g. "93"
+  ts_field: ts                     # opaque monotonic cursor (server local time)
+  asset_ref_prefix: "loom_"        # machine "93" -> asset_ref "loom_93"
+
+  # RPM threshold. 40 is the figure the loom dashboard already uses (RPM_ON = 40):
+  # below 40 the loom is off, at/above it is running. A halted loom does not read a
+  # clean 0 — it coasts and idles in the single digits — so the earlier `lte: 0` rule
+  # missed real stops entirely. These two must stay complementary (no dead band).
+  stop_when:    { field: rpm, lt: 40 }
+  resolve_when: { field: rpm, gte: 40 }
+
+  # A weft or warp break stops production while the machine may still be turning.
+  # Polarity confirmed against loom_dashboard.html:
+  #     const isThreadStop = r => r.weft === 0 || r.warp === 0;
+  #     const effRpm       = r => isThreadStop(r) ? 0 : r.rpm;
+  # 0 means broken, and a thread stop overrides the tachometer entirely — 300 rpm with
+  # weft low is a stop, and it is exactly the fault worth escalating.
+  thread_stop:
+    fields: [weft, warp]
+    low_value: 0
+
+  resolve_grace_seconds: 45        # false-restart guard
+
+  # Paging. `limit` was previously unset, leaving the page size to the server default —
+  # at 44 looms x ~5 rows/s a small default means a poll consumes less than a poll
+  # interval of data and the adapter falls permanently behind. Pin it.
+  limit: 5000                      # matches the dashboard's PAGE_LIMIT
+  max_pages: 50                    # past this, resync to head rather than crawl history
+
+  # Silence is a state. If a machine stops appearing in the feed for this long, its edge
+  # device or the network is down — open an OFFLINE incident rather than let the loom
+  # quietly drop out of monitoring while the fleet looks healthy. One ESP32 serves two
+  # looms, so a dead node shows up as a pair going dark together.
+  #
+  # The dashboard uses OFFLINE_SEC = 30, which is right for a status light but far too
+  # twitchy for paging a human at 3am: at a 30s poll cadence a single missed response
+  # would fire. 180s matches the design doc's 2-minute offline grace. Aging uses the
+  # dashboard's nowLive() approach (server clock + elapsed wall time), so a totally
+  # silent feed still ages instead of freezing the clock.
+  offline_after_seconds: 180
+  expected_count: 44               # warn at seed if fewer machines are reporting
+
+assets:
+  discover: true                   # derive the loom list from observed machines
+  exclude: [loom_99_test]          # skip test looms (matched on asset_ref or machine number)

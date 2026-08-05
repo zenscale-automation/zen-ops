@@ -1,0 +1,32 @@
+# systemd unit for ops-core on the AWS EC2 box (ap-south-1).
+# Differences from ops-core.service (the on-prem unit):
+#   * no After=mariadb.service — MySQL is REMOTE (the Zenscale phpMyAdmin server),
+#     so there is no local database service to order against.
+#   * runs as `ubuntu` from /home/ubuntu/ops-core, matching how zenscale-mcp is laid
+#     out on this box (~/<project>/.venv).
+#
+# Install:  sudo cp deploy/ops-core.aws.service /etc/systemd/system/ops-core.service
+#           sudo systemctl daemon-reload && sudo systemctl enable --now ops-core
+# Verify boot-start by REBOOTING the instance, not by starting it manually.
+
+[Unit]
+Description=ops-core — fault escalation & downtime accountability
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ops-core
+EnvironmentFile=/home/ubuntu/ops-core/.env
+ExecStart=/home/ubuntu/ops-core/.venv/bin/python -m app.main
+Restart=always
+RestartSec=3
+# The remote DB may not be reachable the instant networking comes up; Restart=always
+# + RestartSec covers the race (db.init fails loud, systemd retries).
+StandardOutput=append:/home/ubuntu/ops-core/logs/stdout.log
+StandardError=append:/home/ubuntu/ops-core/logs/stderr.log
+
+[Install]
+WantedBy=multi-user.target

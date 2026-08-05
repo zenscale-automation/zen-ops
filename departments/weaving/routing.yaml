@@ -1,0 +1,45 @@
+department: weaving
+
+# Roles, never names, in the mapping. Departments share people constantly (one
+# electrician covering three areas); hardcoding names means five files to edit when
+# somebody leaves. "owner" is a reserved symbolic role used in escalation ladders — it
+# resolves to the ticket's own owner_role.
+roles:
+  electrician:
+    A: [ravi_k]
+    B: [sukhwinder_s]
+    C: [ravi_k]                 # night covered on overtime
+  fitter:
+    A: [jaspal_s, harjit_s]
+    B: [jaspal_s]
+    C: [harjit_s]
+  yarn_store:
+    A: [store_desk]
+    B: [store_desk]
+    C: [store_desk]
+  supervisor:
+    A: [amarjit_s]
+    B: [gurmeet_s]
+    C: [balwinder_s]
+  shift_incharge:
+    all: [production_manager]
+
+people:
+  ravi_k:       { name: Ravi Kumar,     whatsapp: "+919000000001", rfid: "04A2..." }
+  sukhwinder_s: { name: Sukhwinder S,   whatsapp: "+919000000002", rfid: "04C1..." }
+  jaspal_s:     { name: Jaspal Singh,   whatsapp: "+919000000003", rfid: "04B7..." }
+  harjit_s:     { name: Harjit Singh,   whatsapp: "+919000000004", rfid: "04D9..." }
+  store_desk:   { name: Yarn store,     gchat_space: "spaces/AAAAexample" }
+  amarjit_s:    { name: Amarjit Singh,  whatsapp: "+919000000005" }
+  gurmeet_s:    { name: Gurmeet Singh,  whatsapp: "+919000000006" }
+  balwinder_s:  { name: Balwinder S,    whatsapp: "+919000000007" }
+  production_manager:
+                { name: Production Mgr, whatsapp: "+919000000008" }
+
+# The shift block does double duty: it resolves who is on duty at 03:00, and it is what
+# auto_classify uses to detect the changeover pattern. One source of truth for both.
+shifts:
+  timezone: Asia/Kolkata
+  A: "06:00-14:00"
+  B: "14:00-22:00"
+  C: "22:00-06:00"
