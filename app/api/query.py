@@ -39,7 +39,7 @@ def _label(code: str | None) -> str:
 def overview():
     since = clock.plus_seconds(-24 * 3600)
     open_inc = db.query_one("SELECT COUNT(*) n FROM incidents WHERE status IN ('open','resolving')")["n"]
-    looms_down = db.query_one(
+    assets_down = db.query_one(
         "SELECT COUNT(DISTINCT asset_id) n FROM incidents WHERE status IN ('open','resolving')")["n"]
     open_tkt = db.query_one("SELECT COUNT(*) n FROM tickets WHERE status IN ('open','attended')")["n"]
     pending_prompts = db.query_one(
@@ -49,10 +49,14 @@ def overview():
         " FROM incidents WHERE status='resolved' AND opened_at>=?", (since,))
     resolved_24h = db.query_one(
         "SELECT COUNT(*) n FROM incidents WHERE status='resolved' AND opened_at>=?", (since,))["n"]
+    cfg = current_app.config["OPS_CFG"]
     return jsonify({
         "now": clock.now_iso(),
+        "department": cfg.department,
+        "asset_type": cfg.asset_type,     # "loom" — so the UI can label itself
         "open_incidents": open_inc,
-        "looms_down": looms_down,
+        "assets_down": assets_down,
+        "looms_down": assets_down,        # deprecated alias; drop once nothing reads it
         "open_tickets": open_tkt,
         "pending_reason_prompts": pending_prompts,
         "downtime_minutes_24h": round((dt["s"] or 0) / 60, 1),

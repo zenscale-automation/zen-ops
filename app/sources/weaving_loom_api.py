@@ -49,7 +49,7 @@ class WeavingLoomApiSource:
         s = cfg.source.get("settings", {}) or {}
         # env override wins so the same config points at the real API or the mock
         self.base_url = (os.environ.get("LOOM_API_BASE_URL") or s.get("base_url", "")).rstrip("/")
-        self.api_key = cfg.loom_api_key()
+        self.api_key = cfg.source_api_key()
         self.poll_seconds = int(s.get("poll_seconds", 30))
         self.data_path = s.get("data_path", "/data")
         self.health_path = s.get("health_path", "/health")

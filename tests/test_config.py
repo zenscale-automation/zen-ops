@@ -120,3 +120,55 @@ def test_exported_schema_records_itself_so_a_hand_import_is_recognised(cfg):
     assert "INSERT IGNORE INTO" in sql and "001_init.sql" in sql, \
         "export must record each migration it contains"
     assert "CREATE TABLE IF NOT EXISTS" in sql, "export must be re-runnable"
+
+
+# --- department separation ------------------------------------------------------
+
+def test_core_contains_no_domain_vocabulary(cfg):
+    """The premise of the design is that a second department is four YAML files. That
+    only holds if nothing weaving-specific has leaked into the department-blind layers.
+    Docstrings may use looms as illustration; executable lines may not."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    domain = re.compile(r"\b(loom|looms|weaving|weft|warp|picks)\b", re.I)
+    layers = ["app/core", "app/notifiers", "app/api"] + [
+        "app/config.py", "app/db.py", "app/clock.py", "app/workers.py", "app/main.py"]
+
+    offenders = []
+    for target in layers:
+        path = root / target
+        files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+        for f in files:
+            in_doc = False
+            for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.count('"""') == 1:
+                    in_doc = not in_doc
+                    continue
+                if in_doc or stripped.startswith("#") or stripped.startswith('"""'):
+                    continue
+                code = line.split("#", 1)[0]
+                if domain.search(code):
+                    offenders.append(f"{f.relative_to(root)}:{i}: {stripped}")
+
+    allowed = ("loom_api_key",)   # back-compat alias for the existing weaving adapter
+    offenders = [o for o in offenders if not any(a in o for a in allowed)]
+    assert not offenders, "domain vocabulary in department-blind code:\n  " + \
+        "\n  ".join(offenders)
+
+
+def test_catch_all_reason_comes_from_config_not_a_constant(cfg):
+    """`OTHER_CODE = "weaving.other"` used to live in core/prompts.py, so a second
+    department would have silently recorded its catch-all in weaving's namespace."""
+    from app.core import prompts
+
+    assert cfg.other_code == "weaving.other"
+    assert prompts.options(cfg)[-1]["code"] == cfg.other_code
+
+    cfg.reasons = dict(cfg.reasons)
+    cfg.reasons["defaults"] = {**cfg.defaults, "other_code": "dyeing.other"}
+    cfg.reasons["codes"] = cfg.codes + [
+        {"code": "dyeing.other", "label": {"en": "Other"}, "expected_minutes": 0}]
+    assert prompts.options(cfg)[-1]["code"] == "dyeing.other"

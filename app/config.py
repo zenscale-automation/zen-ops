@@ -112,6 +112,19 @@ class Config:
             return lab.get(lang) or lab.get("en") or code
         return str(lab or code)
 
+    @property
+    def other_code(self) -> str:
+        """The catch-all reason appended to every prompt. Derived from the department
+        (`weaving.other`, `dyeing.other`) or set explicitly as `defaults.other_code`.
+        It was hardcoded to "weaving.other" in core/prompts.py, which meant a second
+        department would silently record its catch-all under weaving's namespace."""
+        return self.defaults.get("other_code") or f"{self.department}.other"
+
+    @property
+    def asset_type(self) -> str:
+        """What one asset is called, for UI labels: loom, vat, machine."""
+        return self.reasons.get("asset_type", "asset")
+
     def prompt_codes(self) -> list[dict]:
         """Reason options shown in a WhatsApp prompt — only codes explicitly flagged
         show_in_prompt: true, in file order. 'Other' is appended by prompts.options().
@@ -173,9 +186,14 @@ class Config:
     def source_setting(self, key: str, default=None):
         return (self.source.get("settings", {}) or {}).get(key, default)
 
-    def loom_api_key(self) -> str | None:
+    def source_api_key(self) -> str | None:
+        """Key for whatever the department's source talks to. The env var NAME comes
+        from source.yaml (`api_key_env`); the value never appears in config."""
         env_name = self.source_setting("api_key_env", "LOOM_API_KEY")
         return _env(env_name)
+
+    # Kept so an existing adapter keeps working; prefer source_api_key().
+    loom_api_key = source_api_key
 
 
 def _read_yaml(path: Path) -> dict:
@@ -192,7 +210,20 @@ def load() -> Config:
     if load_dotenv:
         load_dotenv(REPO_ROOT / ".env")
 
-    department = _env("OPS_DEPARTMENT", "weaving")
+    department = _env("OPS_DEPARTMENT")
+    if not department:
+        # No default on purpose: a department name baked into the core is the very
+        # coupling this layer exists to avoid, and silently defaulting would let a
+        # misconfigured second deployment load the wrong department's rules.
+        available = sorted(
+            p.name for p in (REPO_ROOT / _env("OPS_CONFIG_DIR", "departments")).glob("*")
+            if p.is_dir()
+        ) if (REPO_ROOT / _env("OPS_CONFIG_DIR", "departments")).exists() else []
+        raise ConfigError(
+            "OPS_DEPARTMENT is not set — refusing to guess which department's rules to "
+            "load. Set it in .env"
+            + (f". Available: {', '.join(available)}" if available else "")
+        )
     config_dir = REPO_ROOT / _env("OPS_CONFIG_DIR", "departments")
     dept_dir = config_dir / department
 
@@ -307,6 +338,13 @@ def validate(cfg: Config) -> None:
         problems.append("escalation.yaml: a 'default' ladder is required")
     if "unknown" not in cfg.ladders:
         problems.append("escalation.yaml: an 'unknown' ladder is required (Phase-1 reason prompt)")
+
+    # the catch-all reason must actually exist, or every prompt offers a dead option
+    if cfg.codes and cfg.other_code not in {c.get("code") for c in cfg.codes}:
+        problems.append(
+            f"reasons.yaml: catch-all code '{cfg.other_code}' is not defined. Add it, "
+            "or set defaults.other_code to the code you want appended to every prompt."
+        )
 
     # source adapter named
     if not cfg.source.get("adapter"):

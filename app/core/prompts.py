@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from .. import clock, config
 
-OTHER_CODE = "weaving.other"
+# The catch-all comes from config (cfg.other_code). It used to be the constant
+# "weaving.other" — a domain code sitting in the department-blind core, which a second
+# department would have inherited silently.
 
 
 def options(cfg: "config.Config") -> list[dict]:
@@ -19,7 +21,7 @@ def options(cfg: "config.Config") -> list[dict]:
     opts: list[dict] = []
     n = 0
     for c in cfg.prompt_codes():
-        if c.get("code") == OTHER_CODE:
+        if c.get("code") == cfg.other_code:
             continue
         n += 1
         opts.append({
@@ -30,7 +32,7 @@ def options(cfg: "config.Config") -> list[dict]:
         })
     # 'Other' always last
     n += 1
-    opts.append({"n": n, "code": OTHER_CODE, "label": "Other", "label_hi": None})
+    opts.append({"n": n, "code": cfg.other_code, "label": "Other", "label_hi": None})
     return opts
 
 

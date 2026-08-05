@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ops-core — weaving</title>
+<title>ops-core</title>
 <style>
   :root {
     --page:#f9f9f7; --surface:#fcfcfb; --text:#0b0b0b; --text-2:#52514e; --muted:#898781;
@@ -72,7 +72,7 @@
 <body>
 <header>
   <div>
-    <h1>ops-core · weaving</h1>
+    <h1>ops-core<span id="dept-label"></span></h1>
     <div class="sub">Fault escalation &amp; downtime accountability</div>
   </div>
   <div class="spacer"></div>
@@ -100,7 +100,7 @@
     <div>
       <div class="card">
         <h2>Downtime by reason</h2>
-        <div class="cap">Resolved incidents, last 24 hours. Minutes of lost loom time.</div>
+        <div class="cap">Resolved incidents, last 24 hours. Minutes of lost machine time.</div>
         <div class="bars" id="downtime"></div>
       </div>
       <div class="card">
@@ -125,16 +125,22 @@ $("themeBtn").onclick = () => {
 
 async function getJSON(u){ const r = await fetch(u,{cache:"no-store"}); if(!r.ok) throw new Error(u); return r.json(); }
 
-function statusColor(loomsDown){ return loomsDown > 0 ? "var(--critical)" : "var(--good)"; }
+function statusColor(nDown){ return nDown > 0 ? "var(--critical)" : "var(--good)"; }
 
 function kpiTiles(o){
-  const down = o.looms_down || 0;
+  const down = (o.assets_down ?? o.looms_down) || 0;
+  const noun = o.asset_type || "asset";
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
+  if(o.department){
+    document.getElementById("dept-label").textContent = " · " + o.department;
+    document.title = "ops-core — " + o.department;
+  }
   const tiles = [
-    {k:"Looms down", v:down, u:"right now",
+    {k:Noun+"s down", v:down, u:"right now",
      status:`<span class="status"><span class="dot" style="background:${statusColor(down)}"></span>${down>0?"attention":"all running"}</span>`},
     {k:"Open tickets", v:o.open_tickets||0, u:"awaiting a person"},
     {k:"Reason prompts", v:o.pending_reason_prompts||0, u:"awaiting a reply"},
-    {k:"Downtime 24h", v:fmt(o.downtime_minutes_24h||0), u:"loom-minutes lost"},
+    {k:"Downtime 24h", v:fmt(o.downtime_minutes_24h||0), u:noun+"-minutes lost"},
     {k:"Mean stop 24h", v:fmt(o.mean_stop_minutes_24h||0), u:`min · ${o.incidents_24h||0} incidents`},
   ];
   $("kpis").innerHTML = tiles.map(t=>`
@@ -160,7 +166,7 @@ function ticketRows(rows){
 }
 
 function incidentRows(rows){
-  if(!rows.length){ $("incidents").innerHTML = `<div class="empty">Every loom is running.</div>`; return; }
+  if(!rows.length){ $("incidents").innerHTML = `<div class="empty">Nothing is down.</div>`; return; }
   const body = rows.map(i=>`<tr>
       <td><strong>${i.asset_ref.replace("_"," ")}</strong></td>
       <td>${i.label || '<span style="color:var(--muted)">awaiting reason</span>'}</td>
