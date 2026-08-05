@@ -46,6 +46,7 @@ class Config:
     db_password: str
     db_name: str
     table_prefix: str
+    shadow_mode: bool = True
     reasons: dict = field(default_factory=dict)
     routing: dict = field(default_factory=dict)
     escalation: dict = field(default_factory=dict)
@@ -207,6 +208,8 @@ def load() -> Config:
         db_password=_env("OPS_DB_PASSWORD", ""),
         db_name=_env("OPS_DB_NAME", "ops_core"),
         table_prefix=_env("OPS_TABLE_PREFIX", ""),
+        shadow_mode=str(_env("OPS_SHADOW_MODE", "true")).strip().lower()
+        not in ("0", "false", "no", "off"),
         reasons=_read_yaml(dept_dir / "reasons.yaml"),
         routing=_read_yaml(dept_dir / "routing.yaml"),
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
@@ -218,6 +221,22 @@ def load() -> Config:
 
 def validate(cfg: Config) -> None:
     problems: list[str] = []
+
+    # Shadow mode is a DECISION, not the accident of an unfilled credential field.
+    # The mock roster carries validly-formatted Indian mobile numbers; the moment a BSP
+    # token is set they become live targets and ops-core starts texting strangers.
+    # Leaving shadow mode with placeholder people in routing.yaml is therefore a boot
+    # failure, in the same spirit as every other config check here.
+    if not cfg.shadow_mode:
+        placeholders = sorted(
+            pid for pid, person in cfg.people.items() if person.get("placeholder")
+        )
+        if placeholders:
+            problems.append(
+                "OPS_SHADOW_MODE is off but routing.yaml still contains placeholder "
+                f"people: {', '.join(placeholders)}. Replace them with the real roster "
+                "and remove `placeholder: true`, or set OPS_SHADOW_MODE=true."
+            )
 
     if not cfg.codes:
         problems.append("reasons.yaml: no codes defined")

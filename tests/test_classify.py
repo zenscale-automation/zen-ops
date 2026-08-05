@@ -60,3 +60,53 @@ def test_fleet_stop_at_boundary_is_changeover(cfg):
     # >=threshold within the 300s boundary window at a shift start.
     code = classify.classify_at_open(cfg, last)
     assert code == "shift_change"
+
+
+# --- fleet threshold at the real (small) fleet size ----------------------------
+
+def _register(cfg, refs):
+    from app.core import incidents
+    for ref in refs:
+        with db.transaction() as c:
+            incidents.ensure_asset(c, cfg, ref, ref)
+
+
+def _stop_together(cfg, refs):
+    """One poll cycle: the poller stamps every event in a batch with a single now_iso,
+    so these are simultaneous by construction — not merely 'within 5 seconds'."""
+    from app.core import poller
+    from app.sources.base import IncidentOpened
+    at = clock.now_iso()
+    poller.apply_events(cfg, [IncidentOpened(asset_ref=r, condition="STOPPED", at=at)
+                              for r in refs])
+
+
+def _codes(cfg):
+    return {r["asset_ref"]: r["code"] for r in db.query(
+        "SELECT a.asset_ref, r.code FROM incidents i JOIN assets a ON a.id=i.asset_id"
+        " LEFT JOIN incident_reasons r ON r.incident_id=i.id")}
+
+
+FLEET = ["loom_91", "loom_92", "loom_93", "loom_94"]   # the machines actually on the API
+
+
+def test_two_of_four_stopping_is_not_a_power_failure(cfg):
+    """The dangerous direction. With fleet_fraction 0.5 the threshold on a 4-machine
+    fleet collapses to 2, so two ordinary coincident stops were auto-coded
+    power_failure — which is not ticketable, so both faults vanished silently."""
+    _register(cfg, FLEET)
+    _stop_together(cfg, ["loom_91", "loom_93"])
+    codes = _codes(cfg)
+    assert codes["loom_91"] is None and codes["loom_93"] is None, \
+        f"two of four must NOT auto-classify as fleet-wide, got {codes}"
+    pending = db.query_one("SELECT COUNT(*) n FROM escalations WHERE status='pending'")["n"]
+    assert pending == 2, "both stops must reach the unknown ladder so someone is asked"
+
+
+def test_all_four_stopping_is_still_a_power_failure(cfg):
+    """The safe direction must keep working: a real power cut takes the whole shed."""
+    _register(cfg, FLEET)
+    _stop_together(cfg, FLEET)
+    assert set(_codes(cfg).values()) == {"power_failure"}
+    pending = db.query_one("SELECT COUNT(*) n FROM escalations WHERE status='pending'")["n"]
+    assert pending == 0, "a power failure pages nobody by design"

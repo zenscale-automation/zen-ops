@@ -91,7 +91,7 @@ def main():
     print("· database reset")
 
     print("· starting mock loom API on :8081")
-    _spawn("mock_loom_api.server", {"MOCK_LOOM_COUNT": "44"})
+    _spawn("mock_loom_api.server", {"MOCK_LOOM_IDS": "91,92,93,94"})
     if not _wait(f"{MOCK}/health"):
         print("mock loom API did not start"); _cleanup()
 
@@ -103,12 +103,12 @@ def main():
     print("· seeding a day of resolved downtime")
     subprocess.run([sys.executable, "-m", "scripts.seed_demo"], cwd=str(ROOT), check=False)
 
-    print("· stopping loom_5 and loom_12")
-    _stop_loom("loom_5"); _stop_loom("loom_12")
+    print("· stopping loom_91 and loom_93")
+    _stop_loom("loom_91"); _stop_loom("loom_93")
     time.sleep(4)  # let the poller open incidents
     print("· supervisor replies:")
-    _reply("loom_5", "1")   # electrical
-    _reply("loom_12", "2")  # mechanical
+    _reply("loom_91", "1")   # electrical
+    _reply("loom_93", "2")  # mechanical
 
     print("\n  ✔ Demo running.")
     print(f"  ▶ Dashboard:  {APP}/")

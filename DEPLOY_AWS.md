@@ -106,6 +106,46 @@ Nothing to do — the app runs `migrations/` itself on first boot and records th
 first, paste `deploy/schema.mysql.sql` (already prefix-applied) into the SQL tab of
 the `automation` database; boot then finds everything applied and skips it.
 
+## 4b. Shadow mode
+
+This deployment ships with `OPS_SHADOW_MODE=true`. The full pipeline runs — poll,
+classify, route, escalate, and write every event to MySQL — but no message goes out on
+any channel. Everything that *would* have been sent lands in `logs/notifications.log`,
+tagged with the channel it was destined for.
+
+It is a single explicit switch rather than the side effect of blank credential fields,
+because the placeholder roster in `routing.yaml` carries validly-formatted Indian mobile
+numbers. Without the switch, the day someone pastes in a BSP token to test the wiring,
+ops-core starts texting strangers. Two things make that impossible:
+
+- every channel resolves to the log notifier while shadow mode is on, credentials or not;
+- with shadow mode **off**, ops-core refuses to boot while any routed person still has
+  `placeholder: true` — it fails loudly with the list, the same way a bad reason code does.
+
+Confirm it: `curl -s localhost:8000/health | grep shadow_mode` and the WARNING line in
+`logs/stdout.log` at every start.
+
+Going live later is three steps: replace the people block in `routing.yaml` with the real
+roster and drop the `placeholder` flags, set the channel credentials in `.env`, then set
+`OPS_SHADOW_MODE=false` and restart.
+
+## 4c. Fleet size — retune as looms come online
+
+Only looms **91-94** are on the API today; the other 40 are planned. Two settings are
+tied to that number and both are already set for a fleet of four:
+
+| Setting | File | Now | Why it matters |
+|---|---|---|---|
+| `fleet_fraction` | `reasons.yaml` | `1.0` | Threshold is `max(2, ceil(assets * fraction))`. At `0.5` on four machines that collapses to **2**, so any two looms stopping in the same poll would be auto-coded `power_failure` — which is not ticketable, so both faults disappear silently and nobody is paged. |
+| `expected_count` | `source.yaml` | `4` | Logs a warning at seed if fewer machines report, so a loom that stops transmitting is noticed rather than quietly missing. |
+
+As machines come online, raise `expected_count` to match and lower `fleet_fraction` —
+roughly 0.7 past ten looms, 0.6 past twenty — checking against real power-cut events in
+the event log. Erring high is the safe direction: an unclassified fleet stop merely asks
+the supervisor, whereas a threshold set too low silences genuine faults. Two tests in
+`tests/test_classify.py` pin both directions at the current fleet size and will fail if
+`fleet_fraction` drifts back down before the fleet grows.
+
 ## 5. First run, foreground
 
 ```bash

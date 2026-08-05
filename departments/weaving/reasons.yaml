@@ -20,10 +20,23 @@ auto_classify:                 # evaluated in order, first match wins
     rule: duration_under
     seconds: 120
 
-# fleet_stop / fleet_stop_at_boundary need a "how many looms is fleet-wide"
-# threshold. The design doc leaves this to measurement; default to half the active
-# fleet, overridable here. (Documented deviation — see README.)
-fleet_fraction: 0.5
+# fleet_stop / fleet_stop_at_boundary need a "how many looms is fleet-wide" threshold:
+#     threshold = max(2, ceil(active_assets * fleet_fraction))
+#
+# SET FOR THE CURRENT 4-MACHINE FLEET (looms 91-94; the rest are planned).
+# At 0.5 the threshold on 4 machines collapses to 2 — and because the poller stamps
+# every event in a batch with one timestamp, ANY TWO looms stopping in the same 30s
+# poll would be auto-coded `power_failure`. power_failure is not ticketable, so both
+# faults would be silently swallowed and nobody paged. That is the one failure mode
+# worth being paranoid about: a false negative here is invisible.
+#
+# 1.0 means "all four stopped" — the honest definition of fleet-wide at this size.
+# Erring high is the safe direction: an unclassified fleet stop just asks the
+# supervisor, whereas a too-low threshold silences real faults.
+#
+# WHEN THE FLEET GROWS: drop this as machines come online — roughly 0.7 past ~10
+# looms, 0.6 past ~20 — and confirm against real power-cut events in the event log.
+fleet_fraction: 1.0
 
 codes:
   - code: weaving.electrical

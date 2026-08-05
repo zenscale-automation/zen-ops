@@ -29,6 +29,10 @@ SCEN = [
 ]
 
 
+LOOMS = ["91", "92", "93", "94"]
+LIVE_STOP_A, LIVE_STOP_B = "loom_91", "loom_93"   # left free for the two live tickets
+
+
 def main():
     cfg = config.load()
     db.init(cfg.db_params(), cfg.table_prefix)
@@ -36,8 +40,9 @@ def main():
     n = 0
     for k in range(26):
         code, lo, hi, owner, method = random.choice(SCEN)
-        loom = f"loom_{random.randint(1, 44)}"
-        if loom in ("loom_5", "loom_12"):
+        # Looms 91-94 are the machines actually on the API; the rest are planned.
+        loom = f"loom_{random.choice(LOOMS)}"
+        if loom in (LIVE_STOP_A, LIVE_STOP_B):
             continue
         opened = now - timedelta(minutes=random.randint(30, 22 * 60))
         dur_min = random.randint(lo, hi)

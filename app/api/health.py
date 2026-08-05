@@ -4,7 +4,7 @@ Unauthenticated, intended to be bound to localhost (nginx does not expose it).
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, current_app, jsonify
 
 from .. import clock
 from ..workers import SUPERVISOR
@@ -22,5 +22,7 @@ def health():
         if age > 120:  # no heartbeat in 2 minutes => stale
             stale.append(name)
     ok = bool(h.get("started")) and not stale
-    body = {"ok": ok, "now": clock.now_iso(), "stale_workers": stale, **h}
+    cfg = current_app.config.get("OPS_CFG")
+    body = {"ok": ok, "now": clock.now_iso(), "stale_workers": stale,
+            "shadow_mode": bool(getattr(cfg, "shadow_mode", True)), **h}
     return jsonify(body), (200 if ok else 503)

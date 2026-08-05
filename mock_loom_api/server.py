@@ -20,7 +20,12 @@ from datetime import datetime
 
 from flask import Flask, jsonify, request
 
-N_LOOMS = int(os.environ.get("MOCK_LOOM_COUNT", "44"))
+# Mirror the real fleet: only looms 91-94 are on the API today, the rest are planned.
+# MOCK_LOOM_IDS overrides the list; MOCK_LOOM_COUNT still works for scale testing.
+_IDS = os.environ.get("MOCK_LOOM_IDS", "91,92,93,94")
+_COUNT = os.environ.get("MOCK_LOOM_COUNT")
+LOOM_IDS = ([str(i) for i in range(1, int(_COUNT) + 1)] if _COUNT
+            else [m.strip() for m in _IDS.split(",") if m.strip()])
 API_KEY = os.environ.get("LOOM_API_KEY", "")
 RUNNING_RPM = 300.0
 COASTING_RPM = 7.0     # a stopped loom idles here, not at a clean zero
@@ -29,7 +34,7 @@ COASTING_RPM = 7.0     # a stopped loom idles here, not at a clean zero
 # idles in the single digits, which is why the real rule is a threshold (RPM_ON = 40),
 # not "rpm == 0". The mock stops looms at COASTING_RPM so the demo exercises the real
 # rule; a mock that only ever emits 0 or 300 would pass an adapter that is wrong.
-STATE: dict[str, float] = {str(i): RUNNING_RPM for i in range(1, N_LOOMS + 1)}
+STATE: dict[str, float] = {m: RUNNING_RPM for m in LOOM_IDS}
 STATE["99_test"] = RUNNING_RPM  # excluded by source.yaml
 
 # machine-number -> (weft, warp); 0 == thread broken
@@ -46,8 +51,8 @@ def _now_local() -> str:
 
 def _device_for(machine: str) -> str:
     try:
-        idx = int(machine)
-        return f"esp32-{((idx - 1) // 2) + 1:02d}"
+        idx = LOOM_IDS.index(machine)          # one ESP32 serves two looms
+        return f"esp32-{(idx // 2) + 1:02d}"
     except ValueError:
         return "esp32-99"
 
