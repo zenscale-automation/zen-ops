@@ -20,6 +20,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .. import clock, db
 from ..core import incidents, prompts
+from ..notifiers.whatsapp import normalise_msisdn
 
 bp = Blueprint("webhooks", __name__)
 
@@ -35,12 +36,70 @@ def _verify(secret_env: str) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
+def _verify_meta() -> bool:
+    """Meta signs every webhook with the APP SECRET as `X-Hub-Signature-256:
+    sha256=<hex>` over the raw body. Note it is the app secret, not the verify token —
+    the verify token is only used once, for the subscription handshake below."""
+    secret = os.environ.get("WHATSAPP_APP_SECRET", "")
+    if not secret:
+        return True  # unset (dev) => accept, same posture as _verify
+    header = request.headers.get("X-Hub-Signature-256", "")
+    if not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), request.get_data(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(header[7:], expected)
+
+
+def _extract_meta_messages(data: dict) -> list[dict]:
+    """Flatten Meta's envelope to the messages we care about.
+
+    entry[].changes[].value carries either `messages` (someone wrote to us) or
+    `statuses` (delivery receipts for what we sent). Only the former is a reply; the
+    latter must still return 200 or Meta retries and eventually disables the webhook.
+    """
+    out: list[dict] = []
+    for entry in data.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            value = change.get("value", {}) or {}
+            for msg in value.get("messages", []) or []:
+                out.append(msg)
+    return out
+
+
+def _meta_reply_text(msg: dict) -> str:
+    """A reply arrives as plain text, a quick-reply button, or an interactive list
+    selection depending on how the person answered. All three must parse."""
+    kind = msg.get("type")
+    if kind == "text":
+        return str((msg.get("text") or {}).get("body") or "").strip()
+    if kind == "button":
+        return str((msg.get("button") or {}).get("text") or "").strip()
+    if kind == "interactive":
+        inter = msg.get("interactive") or {}
+        for key in ("button_reply", "list_reply"):
+            if key in inter:
+                # the id is what we set when building the options; prefer it over the
+                # display title, which is localised and may not parse to a digit
+                return str(inter[key].get("id") or inter[key].get("title") or "").strip()
+    return ""
+
+
 # --- reply -> incident matching -------------------------------------------
 
 def _person_by_contact(cfg, channel: str, address: str) -> str | None:
+    """routing.yaml stores "+919000000001"; Meta sends "919000000001". Comparing the
+    raw strings never matches, so every reply would be recorded against a phone number
+    instead of a person."""
     field = "whatsapp" if channel == "whatsapp" else "gchat_space"
+    want = normalise_msisdn(address) if channel == "whatsapp" else address
     for pid, person in cfg.people.items():
-        if person.get(field) and person[field] == address:
+        have = person.get(field)
+        if not have:
+            continue
+        if channel == "whatsapp":
+            if normalise_msisdn(have) == want:
+                return pid
+        elif have == address:
             return pid
     return None
 
@@ -76,9 +135,9 @@ def _find_incident(cfg, channel: str, address: str, context_msg_id: str | None,
             return row["id"]
     # 3) most recent reason prompt sent to this sender, still unanswered
     rows = db.query(
-        "SELECT payload FROM outbox WHERE recipient=? AND channel=?"
+        "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
         " ORDER BY id DESC LIMIT 20",
-        (address, channel),
+        (address, "+" + address if channel == "whatsapp" else address, channel),
     )
     for r in rows:
         p = json.loads(r["payload"]) or {}
@@ -91,10 +150,12 @@ def _find_incident(cfg, channel: str, address: str, context_msg_id: str | None,
 def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
             asset_ref: str | None):
     cfg = current_app.config["OPS_CFG"]
-    # record verbatim FIRST
+    # record verbatim FIRST, with the sender normalised — this row is what opens the
+    # 24-hour service window the notifier checks before choosing free text vs template
+    stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
     raw_id = db.execute(
-        "INSERT INTO inbound_raw(channel, received_at, body) VALUES (?,?,?)",
-        (channel, clock.now_iso(), request.get_data(as_text=True) or text),
+        "INSERT INTO inbound_raw(channel, received_at, body, sender) VALUES (?,?,?,?)",
+        (channel, clock.now_iso(), request.get_data(as_text=True) or text, stored_sender),
     )
 
     incident_id = _find_incident(cfg, channel, sender, context_msg_id, asset_ref)
@@ -111,16 +172,37 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
     return jsonify(result), 200
 
 
+@bp.get("/webhook/whatsapp")
+def whatsapp_verify():
+    """Meta's one-time subscription handshake: it GETs with a verify token of our
+    choosing and expects hub.challenge echoed back as plain text."""
+    expected = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge", "")
+    if mode == "subscribe" and expected and token == expected:
+        return challenge, 200, {"Content-Type": "text/plain"}
+    return jsonify({"error": "verification failed"}), 403
+
+
 @bp.post("/webhook/whatsapp")
 def whatsapp():
-    if not _verify("WHATSAPP_WEBHOOK_SECRET"):
+    if not _verify_meta():
         return jsonify({"error": "bad signature"}), 401
     data = request.get_json(silent=True) or {}
-    sender = data.get("from") or data.get("sender") or ""
-    text = str(data.get("text") or data.get("body") or "").strip()
-    context_msg_id = (data.get("context") or {}).get("message_id") or data.get("context_id")
-    asset_ref = data.get("asset_ref")
-    return _handle("whatsapp", sender, text, context_msg_id, asset_ref)
+    messages = _extract_meta_messages(data)
+    if not messages:
+        # delivery receipt, read receipt, or a status change. Acknowledge it — a non-200
+        # makes Meta retry and eventually disable the subscription.
+        return jsonify({"ignored": True}), 200
+
+    result = None
+    for msg in messages:
+        sender = str(msg.get("from") or "")
+        text = _meta_reply_text(msg)
+        context_msg_id = (msg.get("context") or {}).get("id")
+        result = _handle("whatsapp", sender, text, context_msg_id, None)
+    return result
 
 
 @bp.post("/webhook/gchat")

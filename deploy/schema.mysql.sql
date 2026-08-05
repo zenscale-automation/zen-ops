@@ -146,6 +146,56 @@ CREATE TABLE IF NOT EXISTS opscore_events (                            -- append
   KEY ix_ev_at     (at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ===== 002_inbound_sender.sql =====
+-- Record WHO sent an inbound message, not just what they sent.
+--
+-- WhatsApp bills business-initiated template messages but delivers free-form replies
+-- free inside the 24-hour "customer service window" that opens whenever the person
+-- messages us. To use that window we have to know, per recipient, when they last wrote
+-- to us — which the original opscore_inbound_raw could not answer, since it stored only the
+-- verbatim body.
+--
+-- It matters for correctness as much as cost: outside the window ONLY an approved
+-- template may be sent, so a notifier that cannot tell which side of the window it is
+-- on will eventually try to send free text and be rejected by Meta.
+--
+-- Stored as digits only (no '+', no spaces) because Meta reports `from` as
+-- "919000000001" while routing.yaml carries "+91 90000 00001". Normalising on the way
+-- in means the lookup never has to guess at a format.
+
+ALTER TABLE opscore_inbound_raw ADD COLUMN sender VARCHAR(64) NULL;
+ALTER TABLE opscore_inbound_raw ADD INDEX ix_inbound_sender (channel, sender, received_at);
+
+-- ===== 003_config_overrides.sql =====
+-- Runtime-editable configuration.
+--
+-- The YAML files stay the base: git-tracked, heavily commented, and the thing you read
+-- to understand the system. This table holds the DELTA applied on top, written by the
+-- config API at runtime.
+--
+-- Why an overlay rather than rewriting the YAML in place:
+--   * A YAML round-trip destroys comments, and the comments in reasons.yaml and
+--     source.yaml are load-bearing documentation — why the RPM threshold is 40, why
+--     fleet_fraction is 1.0 at four looms. Machine-writing those files would silently
+--     delete the reasoning behind every number.
+--   * Reverting a bad 3am edit becomes DELETE of one row, not a git operation on a
+--     server.
+--   * State that must survive a restart already lives in MySQL. Config is now the same
+--     kind of thing as a pending timer.
+--
+-- One row per scope, holding the whole merged document as JSON. Effective config is
+-- the YAML with this applied as an RFC 7386 merge patch, validated as a unit before
+-- it is ever committed — so the boot-time "fail loud" guarantee becomes "reject the
+-- write", never "accept a config that routes nothing to nobody".
+
+CREATE TABLE IF NOT EXISTS opscore_config_overrides (
+  scope      VARCHAR(32) NOT NULL,          -- reasons | routing | escalation
+  patch      MEDIUMTEXT  NOT NULL,          -- JSON merge patch over the YAML
+  updated_at CHAR(25)    NOT NULL,
+  updated_by VARCHAR(64) NULL,
+  PRIMARY KEY (scope)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ===== bookkeeping =====
 CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
   name VARCHAR(191) NOT NULL,
@@ -155,3 +205,7 @@ CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
 
 INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('001_init.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('002_inbound_sender.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('003_config_overrides.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));

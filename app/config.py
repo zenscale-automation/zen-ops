@@ -9,11 +9,25 @@ nobody at 3am.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger("ops.config")
+
+# Scopes the config API may edit at runtime. `source` is deliberately excluded: its
+# settings are read once when the source adapter is constructed, so changing them
+# without rebuilding the adapter would appear to work and silently do nothing — and
+# rebuilding it mid-shift discards the API cursor and the per-loom state. Source
+# changes stay a restart.
+EDITABLE_SCOPES = ("reasons", "routing", "escalation")
+
+_reload_lock = threading.Lock()
 
 try:
     from dotenv import load_dotenv
@@ -51,6 +65,7 @@ class Config:
     routing: dict = field(default_factory=dict)
     escalation: dict = field(default_factory=dict)
     source: dict = field(default_factory=dict)
+    version: int = 0
 
     def db_params(self) -> dict:
         return {
@@ -147,6 +162,19 @@ class Config:
     def person(self, person_id: str) -> dict | None:
         return self.people.get(person_id)
 
+    @property
+    def default_owner(self) -> str | None:
+        """One named person who catches anything a role does not resolve to. Without
+        this, a reason whose role has nobody on the current shift routes to nowhere and
+        the fault is silently unassigned — the exact defect the system exists to remove."""
+        return self.routing.get("default_owner")
+
+    @property
+    def route_all_to_default(self) -> bool:
+        """Pilot switch: send EVERY notification to default_owner regardless of role,
+        for running before the real per-role roster exists."""
+        return bool(self.routing.get("route_all_to_default", False))
+
     def role_person_ids(self, role: str, shift: str | None) -> list[str]:
         spec = self.roles.get(role, {})
         if "all" in spec:
@@ -194,6 +222,40 @@ class Config:
 
     # Kept so an existing adapter keeps working; prefer source_api_key().
     loom_api_key = source_api_key
+
+
+def merge_patch(target, patch):
+    """RFC 7386 JSON merge patch. Objects merge recursively, null deletes a key, and
+    anything else — including lists — replaces wholesale. Lists are replaced rather than
+    merged on purpose: an escalation ladder is an ordered sequence, and 'merging' two
+    ladders element-wise produces a rung order nobody asked for."""
+    if not isinstance(patch, dict):
+        return patch
+    if not isinstance(target, dict):
+        target = {}
+    out = dict(target)
+    for key, value in patch.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = merge_patch(out.get(key), value)
+    return out
+
+
+def load_overrides() -> dict:
+    """Patches stored by the config API. Missing table (pre-migration) is not fatal."""
+    from . import db
+    try:
+        rows = db.query("SELECT scope, patch FROM config_overrides")
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        try:
+            out[r["scope"]] = json.loads(r["patch"])
+        except (TypeError, ValueError):
+            log.warning("config override for '%s' is not valid JSON — ignored", r["scope"])
+    return out
 
 
 def _read_yaml(path: Path) -> dict:
@@ -246,8 +308,53 @@ def load() -> Config:
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
         source=_read_yaml(dept_dir / "source.yaml"),
     )
+    apply_overrides(cfg, load_overrides())
     validate(cfg)
     return cfg
+
+
+def apply_overrides(cfg: Config, overrides: dict) -> None:
+    """Layer stored patches over the YAML, in place."""
+    for scope in EDITABLE_SCOPES:
+        patch = overrides.get(scope)
+        if patch:
+            setattr(cfg, scope, merge_patch(getattr(cfg, scope), patch))
+
+
+def candidate(cfg: Config, overrides: dict) -> Config:
+    """A throwaway Config with `overrides` applied, for validating a proposed change
+    BEFORE it is committed. Nothing about the live config is touched."""
+    dept_dir = cfg.config_dir / cfg.department
+    trial = Config(
+        department=cfg.department, config_dir=cfg.config_dir, host=cfg.host,
+        port=cfg.port, default_channel=cfg.default_channel, db_host=cfg.db_host,
+        db_port=cfg.db_port, db_user=cfg.db_user, db_password=cfg.db_password,
+        db_name=cfg.db_name, table_prefix=cfg.table_prefix,
+        shadow_mode=cfg.shadow_mode,
+        reasons=_read_yaml(dept_dir / "reasons.yaml"),
+        routing=_read_yaml(dept_dir / "routing.yaml"),
+        escalation=_read_yaml(dept_dir / "escalation.yaml"),
+        source=_read_yaml(dept_dir / "source.yaml"),
+    )
+    apply_overrides(trial, overrides)
+    return trial
+
+
+def reload_into(cfg: Config, overrides: dict) -> None:
+    """Swap the live config's documents for the overridden ones.
+
+    The SAME Config object is mutated rather than replaced, because workers and Flask
+    captured this instance at startup. Every accessor reads through to these dicts on
+    each call, so replacing them whole (never mutating in place) makes the change take
+    effect on the next tick with no plumbing and no torn reads.
+    """
+    with _reload_lock:
+        trial = candidate(cfg, overrides)
+        validate(trial)                      # never install a config that fails
+        cfg.reasons = trial.reasons
+        cfg.routing = trial.routing
+        cfg.escalation = trial.escalation
+        cfg.version += 1
 
 
 def validate(cfg: Config) -> None:
@@ -312,6 +419,17 @@ def validate(cfg: Config) -> None:
                     problems.append(
                         f"routing.yaml: role '{role}' references unknown person '{pid}'"
                     )
+
+    # the default owner must be a real person, or the backstop silently isn't one
+    if cfg.default_owner and cfg.default_owner not in people:
+        problems.append(
+            f"routing.yaml: default_owner '{cfg.default_owner}' is not a person in "
+            "routing.yaml"
+        )
+    if cfg.route_all_to_default and not cfg.default_owner:
+        problems.append(
+            "routing.yaml: route_all_to_default is on but no default_owner is set"
+        )
 
     # shifts present
     if not cfg.shifts:

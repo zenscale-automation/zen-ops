@@ -183,7 +183,10 @@ def response_times():
 
 @bp.get("/api/events/<entity>/<int:entity_id>")
 def event_timeline(entity, entity_id):
-    if entity not in ("incident", "ticket", "escalation"):
+    # "config" is entity_id 0 — there is one configuration, and its history is as much
+    # part of the audit trail as any incident. Who widened the ladder at 2am is exactly
+    # the question this system exists to be able to answer.
+    if entity not in ("incident", "ticket", "escalation", "config"):
         return jsonify({"error": "unknown entity"}), 400
     return jsonify({"entity": entity, "entity_id": entity_id,
                     "events": events.timeline(entity, entity_id)})
