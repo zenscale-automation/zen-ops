@@ -415,6 +415,30 @@ def validate(cfg: Config) -> None:
                 "and remove `placeholder: true`, or set OPS_SHADOW_MODE=true."
             )
 
+    # Going live with no provider credentials is silent, not loud: the notifier falls
+    # back to the log, returns a log-<uuid> id, and the outbox records status='sent'.
+    # The log line is byte-identical to shadow mode's, so logs/notifications.log cannot
+    # distinguish "working as designed" from "live and reaching nobody", and /health
+    # reports shadow_mode:false ok:true throughout. Every page for an entire pilot could
+    # be a line in a file with a green dashboard above it. Refuse to boot instead.
+    if not cfg.shadow_mode:
+        channels = set()
+        for person in cfg.people.values():
+            if person.get("whatsapp"):
+                channels.add("whatsapp")
+            elif person.get("gchat_space"):
+                channels.add("gchat")
+        if "whatsapp" in channels and not _env("PICKYASSIST_TOKEN"):
+            problems.append(
+                "OPS_SHADOW_MODE is off and people are routed over WhatsApp, but "
+                "PICKYASSIST_TOKEN is not set. Every message would be written to "
+                "logs/notifications.log and recorded as sent.")
+        if "gchat" in channels and not _env("GCHAT_WEBHOOK_BASE_URL"):
+            problems.append(
+                "OPS_SHADOW_MODE is off and people are routed over Google Chat, but "
+                "GCHAT_WEBHOOK_BASE_URL is not set. Those messages would be written to "
+                "a log file and recorded as sent.")
+
     if not cfg.codes:
         problems.append("reasons.yaml: no codes defined")
 

@@ -96,6 +96,24 @@ def drain(cfg, limit: int = 50) -> dict:
     return {"sent": sent, "failed": failed, "retried": retried}
 
 
+def failed_since(seconds: int) -> int:
+    """Pages that exhausted every retry recently.
+
+    depth() counts what is QUEUED, which falls to zero when a channel is failing
+    completely — the metric improves as delivery gets worse. This is the one that says
+    somebody was not called.
+    """
+    try:
+        since = clock.plus_seconds(-abs(seconds))
+        r = db.query_one(
+            "SELECT COUNT(*) n FROM outbox WHERE status='failed' AND next_try_at>=?",
+            (since,),
+        )
+        return int(r["n"]) if r else 0
+    except Exception:
+        return 0
+
+
 def depth() -> int:
     r = db.query_one("SELECT COUNT(*) n FROM outbox WHERE status='queued'")
     return r["n"] if r else 0

@@ -81,6 +81,15 @@ class Supervisor:
             _Worker("ticker", lambda: ticker.tick(cfg), ticker_seconds, self),
             _Worker("outbox", lambda: outbox.drain(cfg), outbox_seconds, self),
         ]
+        # Seed a heartbeat for every worker before starting them. Without this a worker
+        # that raises on its very first tick and every tick after never enters _beats at
+        # all — and /health iterates _beats, so it cannot appear in `stale` and `ok`
+        # stays true. The most complete failure available was the one the health check
+        # could not see.
+        started_at = clock.now_iso()
+        with self._lock:
+            for w in self._workers:
+                self._beats.setdefault(w.name, started_at)
         for w in self._workers:
             w.start()
         self._started = True
@@ -100,7 +109,23 @@ class Supervisor:
             "workers": beats,
             "last_poll_at": last_poll,
             "outbox_queued": outbox.depth(),
+            # Queue depth alone IMPROVES when delivery fails — a channel failing 100% of
+            # the time drains to zero and looks idle. The count of pages that gave up is
+            # the metric that actually tracks "somebody was not called".
+            "outbox_failed_1h": outbox.failed_since(3600),
+            "escalations_wedged": _wedged_count(),
         }
+
+
+def _wedged_count() -> int:
+    """Escalations the ticker could not fire and parked. Any non-zero value means a fault
+    exists that nobody will be paged about until a human looks."""
+    try:
+        from . import db
+        r = db.query_one("SELECT COUNT(*) n FROM escalations WHERE status='wedged'")
+        return int(r["n"]) if r else 0
+    except Exception:
+        return 0
 
 
 SUPERVISOR = Supervisor()
