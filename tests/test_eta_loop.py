@@ -172,3 +172,37 @@ def test_a_pickyassist_number_reply_lands_as_an_estimate(cfg, monkeypatch):
         "SELECT action FROM escalations WHERE ticket_id=? AND status='pending'",
         (tkt["id"],))
     assert [p["action"] for p in pending] == ["eta_check"], "everything else snoozed"
+
+
+def test_a_cold_recipient_gets_the_eta_template_not_doomed_free_text(cfg, monkeypatch):
+    """The window assumption, made explicit: free text only reaches somebody whose own
+    reply opened the 24h window. A fitter who has never messaged the bot has no window,
+    so their first ask MUST ride an approved template — free text would 802 permanently
+    and they would simply never be asked."""
+    monkeypatch.setenv("PICKYASSIST_TOKEN", "t")
+    monkeypatch.setenv("PICKYASSIST_ETA_TEMPLATE_ID", "VG9001")
+    from app.notifiers.whatsapp import WhatsAppNotifier
+
+    n = WhatsAppNotifier(cfg)
+    # +919812300001 has never sent an inbound message: window closed.
+    body = n.build("+919812300001", {"type": "eta_request", "asset_ref": "loom_91",
+                                     "reason_label": "Electrical fault"})
+    assert body.get("template_id") == "VG9001"
+    assert body["data"][0]["template_message"] == ["Loom 91", "Electrical fault"]
+
+
+def test_inside_the_window_the_eta_question_still_goes_as_full_text(cfg, monkeypatch):
+    """When their own reply opened the window, the full question — with the reply
+    instructions and the no-chasing promise — is better than the terser template."""
+    monkeypatch.setenv("PICKYASSIST_TOKEN", "t")
+    monkeypatch.setenv("PICKYASSIST_ETA_TEMPLATE_ID", "VG9001")
+    from app.notifiers.whatsapp import WhatsAppNotifier
+
+    db.execute("INSERT INTO inbound_raw(channel, received_at, body, sender)"
+               " VALUES ('whatsapp', ?, 'reply', '919812300002')", (clock.now_iso(),))
+    n = WhatsAppNotifier(cfg)
+    body = n.build("+919812300002", {"type": "eta_request", "asset_ref": "loom_91",
+                                     "reason_label": "Electrical fault",
+                                     "text": "full question here"})
+    assert "template_id" not in body
+    assert body["data"][0]["message"] == "full question here"

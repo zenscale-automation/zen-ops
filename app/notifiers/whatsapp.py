@@ -72,6 +72,12 @@ class WhatsAppNotifier:
         self.application = os.environ.get("PICKYASSIST_APPLICATION", "121")
         self.prompt_template = os.environ.get("PICKYASSIST_PROMPT_TEMPLATE_ID", "")
         self.escalation_template = os.environ.get("PICKYASSIST_ESCALATION_TEMPLATE_ID", "")
+        # The hours-estimate question. Free text covers it ONLY while the person asked is
+        # the person who just replied — true with a one-person roster, false the moment a
+        # supervisor's answer routes a ticket to a fitter who has never messaged us. A
+        # cold first ask with no template is a permanent 802 and the fitter is never
+        # asked, so this template is required before the roster grows past one.
+        self.eta_template = os.environ.get("PICKYASSIST_ETA_TEMPLATE_ID", "")
         self.language = os.environ.get("PICKYASSIST_TEMPLATE_LANG", "en")
         self._fallback = LogNotifier(cfg, via="whatsapp")
 
@@ -133,6 +139,17 @@ class WhatsAppNotifier:
         no names — get the order wrong and the message reads plausibly and says something
         untrue, which is worse than failing.
         """
+        if payload.get("type") == "eta_request":
+            # {{1}} asset, {{2}} reason. Falls back to the escalation template ("please
+            # attend") when unapproved — degraded but delivered, and a numeric reply to
+            # it still lands as the estimate, because reply routing keys on the payload
+            # type we STORED, not on which template carried it.
+            template = self.eta_template or self.escalation_template
+            if template == self.eta_template and template:
+                return template, [
+                    self._asset_label(payload),                       # {{1}} Loom 91
+                    payload.get("reason_label") or "a fault",         # {{2}} Electrical fault
+                ]
         if payload.get("type") == "reason_prompt":
             # The gap travels IN THE PAYLOAD, computed by escalation.fire from the ladder
             # that scheduled this prompt — one source for the timing and the promise.
