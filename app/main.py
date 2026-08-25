@@ -37,6 +37,19 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
             "LIVE MODE — messages will be delivered to real people on real channels.")
     db.init(cfg.db_params(), cfg.table_prefix)
 
+    # config.load() ran before the database existed, so load_overrides() failed inside it
+    # and returned {} — meaning cfg currently holds the YAML files alone. Apply the stored
+    # overrides now that we can actually read them.
+    #
+    # Without this every change made through the config API survives until the next
+    # restart and then silently reverts, which is worse than not offering the API at all:
+    # the operator watched it take effect.
+    stored = config.load_overrides()
+    if stored:
+        config.reload_into(cfg, stored)
+        logging.getLogger("ops").info(
+            "applied stored config overrides for: %s", ", ".join(sorted(stored)))
+
     app = Flask(__name__, static_folder="static", static_url_path="/static")
     app.config["OPS_CFG"] = cfg
     app.register_blueprint(health_bp)

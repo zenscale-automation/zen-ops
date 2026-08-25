@@ -243,11 +243,22 @@ def merge_patch(target, patch):
 
 
 def load_overrides() -> dict:
-    """Patches stored by the config API. Missing table (pre-migration) is not fatal."""
+    """Patches stored by the config API. Missing table (pre-migration) is not fatal.
+
+    Returning {} on failure is deliberate but dangerous, so it is loud: this function is
+    also reached from load(), which runs BEFORE db.init() at startup. A silent {} there
+    means every stored change is discarded on restart while the operator who made it has
+    already seen it apply — the config equivalent of a page nobody receives. main.py
+    re-applies overrides once the database exists; this warning is how you find out if
+    that ever stops happening.
+    """
     from . import db
     try:
         rows = db.query("SELECT scope, patch FROM config_overrides")
-    except Exception:
+    except Exception as exc:
+        log.warning("could not read config overrides (%s) — running on the YAML files "
+                    "alone. If this appears after startup has completed, stored config "
+                    "changes are being dropped.", exc.__class__.__name__)
         return {}
     out = {}
     for r in rows:
