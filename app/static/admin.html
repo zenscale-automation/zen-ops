@@ -122,6 +122,7 @@
 
 <main>
   <div>
+    <div id="pilot"></div>
     <div id="banners"></div>
 
     <!-- ============================= plans ============================= -->
@@ -319,6 +320,7 @@ async function load() {
   $("#shadowDot").className = "dot " + (shadow ? "warn" : "ok");
   $("#shadowTxt").textContent = shadow ? "shadow mode — nothing sends" : "live";
 
+  renderPilot();
   renderPlans(); renderTeams(); renderPeople(); renderReasons(); renderSimOptions();
 
   const unrouted = STATE.teams.filter(t => t.targeted && t.empty_shifts.length);
@@ -330,6 +332,35 @@ async function load() {
     banner("warn", "Some people are still sample placeholders — ops-core will refuse to " +
       "run live until they are replaced with real contacts.");
   }
+}
+
+/* pilot mode -------------------------------------------------------------- */
+
+// While route_all_to_default is on, everything on this page is stored and inert. Saying
+// so once, permanently, at the top is the difference between a tool people trust and one
+// they quietly stop believing.
+function renderPilot() {
+  const box = $("#pilot");
+  box.innerHTML = "";
+  const p = STATE.pilot_mode;
+  if (!p || !p.route_all_to_default) return;
+
+  const b = el("div", "banner warn");
+  b.append(el("strong", null, "Pilot mode is on. "));
+  b.append(document.createTextNode(
+    "Every notification goes to " + (p.default_owner_name || p.default_owner) +
+    " regardless of which team owns the fault. Changes below are saved, but will not " +
+    "change who gets called until this is turned off."));
+  const btn = el("button", "sm", "Turn off pilot mode");
+  btn.style.marginLeft = "10px";
+  btn.onclick = async () => {
+    if (!confirm("Turn off pilot mode? Faults will start routing to their own teams " +
+                 "using the roster below.")) return;
+    handle(await api("PATCH", "/api/config/routing", { route_all_to_default: false }),
+           "Pilot mode off — faults now route by team");
+  };
+  b.append(btn);
+  box.append(b);
 }
 
 /* plans ------------------------------------------------------------------- */
