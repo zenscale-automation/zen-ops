@@ -161,6 +161,13 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
             "type": "reason_prompt",
             "text": text,
             "asset_ref": asset_ref,
+            # A WhatsApp template takes its variables SEPARATELY — the rendered `text`
+            # above cannot be passed as one parameter, because template parameters may
+            # not contain newlines. So the pieces travel too, and the notifier assembles
+            # whichever form its provider needs.
+            "asset_label": asset_ref.replace("_", " ").title(),
+            "opened_at": incident["opened_at"],
+            "reprompt_minutes": int(cfg.reprompt_after_minutes),
             "incident_id": incident["id"],
             "rung": esc_row["rung"],
             "options": prompts.options(cfg),
@@ -183,6 +190,10 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
             "type": "escalation",
             "text": text,
             "asset_ref": asset_ref,
+            "asset_label": asset_disp,
+            "reason_label": (cfg.label(code, "en") if code else "Not yet reported"),
+            "minutes_down": minutes,
+            "opened_at": base_iso,
             "incident_id": incident["id"],
             "ticket_id": esc_row["ticket_id"],
             "rung": esc_row["rung"],

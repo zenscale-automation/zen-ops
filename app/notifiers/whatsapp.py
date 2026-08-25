@@ -1,21 +1,31 @@
-"""WhatsApp notifier — Meta WhatsApp Cloud API, direct (no BSP).
+"""WhatsApp notifier — PickyAssist (WhatsApp Official, application 121).
 
 Outbound only, to individuals, never a group — a group is the disease the system
-replaces. Two send modes, and picking between them correctly is the whole job:
+replaces. Two send modes, and choosing between them correctly is the whole job:
 
-  * Outside a service window, Meta accepts ONLY a pre-approved template. ops-core uses
-    a single generic UTILITY template whose one variable carries the fully-rendered
-    message body. That is deliberate: bake the numbered reason list into template text
-    and every edit to reasons.yaml needs a fresh Meta approval, which would quietly
-    undo the promise that a Shingora engineer can change a reason code and restart.
-    One template, approved once, and the list stays in YAML where it belongs.
+  * Outside the service window WhatsApp accepts ONLY a pre-approved template.
+    PickyAssist reports this as status 802, "Not Contactable 24 Hours Session Expired".
+  * Inside the window — the 24 hours after that person last messaged us — free text is
+    allowed. Supervisors reply to the first prompt of a shift, which opens the window for
+    everything else that shift.
 
-  * Inside a service window — the 24 hours after the person last messaged us — free
-    text is allowed and is not billed. Supervisors reply to the first prompt of a
-    shift, which opens the window for everything else that shift.
+Two templates are needed, not one, because the two messages have different shapes:
+the numbered reason question, and the "loom X is down, please attend" page. Both are
+approved with their variables baked in as `{{n}}`; this module supplies the values.
+
+Why the values and not the rendered text: a WhatsApp template parameter may not contain
+newline characters, tabs, or more than four consecutive spaces — Meta rejects it with
+"Param text cannot have new-line/tab characters". `prompts.render` produces a multi-line
+body, so it cannot be passed as one variable, however convenient that would be. The
+consequence is that the reason list lives inside the approved template rather than in
+reasons.yaml, and changing which reasons appear needs a new template approved. That is
+why the admin API refuses to edit the prompt list.
 
 If nothing is configured this falls back to the log notifier, so Phase 1 runs with zero
 credentials. In shadow mode the registry never constructs this class at all.
+
+PickyAssist returns HTTP 200 with an error body, so `raise_for_status()` is worse than
+useless here: it never fires, and a failed send would be recorded as delivered.
 """
 
 from __future__ import annotations
@@ -26,38 +36,56 @@ import re
 import requests
 
 from .. import clock, db
+from .base import PermanentSendError
 from .log import LogNotifier
 
 SERVICE_WINDOW_HOURS = 24
 
+PUSH_PATH = "/push"
+STATUS_ACCEPTED = 100
+# Failures that will fail identically on every retry. The outbox drains serially, so
+# retrying one of these eight times occupies the queue for ~10 minutes behind a message
+# that cannot succeed, while real pages wait behind it.
+PERMANENT_STATUSES = {
+    401: "authentication failed — check PICKYASSIST_TOKEN and the IP allowlist",
+    801: "the WhatsApp account is not active on the PickyAssist side",
+    802: "no open 24-hour session with this person, and this was sent as free text — "
+         "it needed an approved template",
+}
+
 
 def normalise_msisdn(value: str) -> str:
-    """Digits only. Meta reports `from` as "919000000001"; routing.yaml carries
-    "+919000000001". Comparing raw strings silently fails to match every time."""
+    """Digits only. PickyAssist reports the sender as "919000000001" and wants the same
+    on the way out; routing.yaml carries "+91 90000 00001". Comparing or sending raw
+    strings silently fails to match every time."""
     return re.sub(r"\D", "", value or "")
 
 
 class WhatsAppNotifier:
     def __init__(self, cfg=None):
         self.cfg = cfg
-        self.base = os.environ.get("WHATSAPP_GRAPH_BASE", "https://graph.facebook.com")
-        self.api_version = os.environ.get("WHATSAPP_API_VERSION", "v21.0")
-        self.token = os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
-        self.phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
-        self.template_name = os.environ.get("WHATSAPP_TEMPLATE_NAME", "ops_core_alert")
-        self.template_lang = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en")
+        self.base = os.environ.get("PICKYASSIST_BASE_URL",
+                                   "https://app.pickyassist.com/api/v2").rstrip("/")
+        self.token = os.environ.get("PICKYASSIST_TOKEN", "")
+        # 121 = WhatsApp Official Managed, which is what this account is provisioned for.
+        # 8 and 101 exist for other PickyAssist plans and return 801 here.
+        self.application = os.environ.get("PICKYASSIST_APPLICATION", "121")
+        self.prompt_template = os.environ.get("PICKYASSIST_PROMPT_TEMPLATE_ID", "")
+        self.escalation_template = os.environ.get("PICKYASSIST_ESCALATION_TEMPLATE_ID", "")
+        self.language = os.environ.get("PICKYASSIST_TEMPLATE_LANG", "en")
         self._fallback = LogNotifier(cfg, via="whatsapp")
 
     @property
     def configured(self) -> bool:
-        return bool(self.token and self.phone_number_id)
+        return bool(self.token)
 
     # --- service window ------------------------------------------------------
+
     def window_open(self, recipient: str) -> bool:
         """True if this person messaged us within the last 24h, so free text is allowed.
 
         Errs closed: any doubt and we send a template, which always works. Guessing the
-        other way gets the message rejected by Meta and the fault goes unreported.
+        other way earns an 802 and the fault goes unreported.
         """
         digits = normalise_msisdn(recipient)
         if not digits:
@@ -73,54 +101,122 @@ class WhatsAppNotifier:
         except Exception:
             return False
 
-    # --- payload shaping -----------------------------------------------------
-    def _free_text(self, to: str, text: str) -> dict:
-        return {"messaging_product": "whatsapp", "recipient_type": "individual",
-                "to": to, "type": "text",
-                "text": {"preview_url": False, "body": text}}
+    # --- template variables --------------------------------------------------
 
-    def _template(self, to: str, text: str) -> dict:
-        """One variable, carrying the whole rendered body. See the module docstring for
-        why the reason list is not baked into the template."""
+    def _minutes_down(self, payload: dict) -> str:
+        """Recomputed at send time, not frozen at enqueue time. The payload is built
+        inside the ticker transaction and may then sit in the outbox through a retry
+        ladder; a frozen number can be minutes stale by the time it is read on a phone."""
+        if payload.get("minutes_down") is not None:
+            return str(payload["minutes_down"])
+        opened = payload.get("opened_at")
+        if not opened:
+            return "0"
+        try:
+            secs = (clock.now() - clock.parse(opened)).total_seconds()
+            return str(max(1, round(secs / 60)))
+        except Exception:
+            return "0"
+
+    def _asset_label(self, payload: dict) -> str:
+        return (payload.get("asset_label")
+                or (payload.get("asset_ref") or "").replace("_", " ").title()
+                or "A loom")
+
+    def template_for(self, payload: dict) -> tuple[str, list]:
+        """(template_id, positional variables) for this payload type.
+
+        The order is the order the variables appear in the approved template. There are
+        no names — get the order wrong and the message reads plausibly and says something
+        untrue, which is worse than failing.
+        """
+        if payload.get("type") == "reason_prompt":
+            reprompt = payload.get("reprompt_minutes")
+            if reprompt is None and self.cfg is not None:
+                reprompt = int(self.cfg.reprompt_after_minutes)
+            return self.prompt_template, [
+                self._asset_label(payload),          # {{1}} Weaving Loom 91
+                self._minutes_down(payload),         # {{2}} 17
+                str(reprompt if reprompt is not None else 15),   # {{3}} 15
+            ]
+        return self.escalation_template, [
+            self._asset_label(payload),              # {{1}} Weaving Loom 91
+            payload.get("reason_label") or "Not yet reported",   # {{2}} Electrical fault
+            self._minutes_down(payload),             # {{3}} 32
+        ]
+
+    # --- payload shaping -----------------------------------------------------
+
+    def _text_body(self, to: str, payload: dict) -> dict:
+        entry = {"number": to, "message": payload.get("text") or ""}
+        ref = self._reference(payload)
+        if ref:
+            entry["reference_number"] = ref
+        return {"token": self.token, "application": str(self.application), "data": [entry]}
+
+    def _template_body(self, to: str, payload: dict) -> dict:
+        template_id, values = self.template_for(payload)
         return {
-            "messaging_product": "whatsapp", "recipient_type": "individual",
-            "to": to, "type": "template",
-            "template": {
-                "name": self.template_name,
-                "language": {"code": self.template_lang},
-                "components": [{
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": text}],
-                }],
-            },
+            "token": self.token,
+            "application": int(self.application),
+            "template_id": template_id,
+            "language": self.language,
+            "template_globalmessage": values,
+            "data": [{"number": to, "template_message": values}],
         }
+
+    @staticmethod
+    def _reference(payload: dict) -> str:
+        """Our own id echoed back on delivery reports, so a PickyAssist row can be tied
+        to the incident it came from without guessing."""
+        inc, rung = payload.get("incident_id"), payload.get("rung")
+        return f"inc:{inc}:rung:{rung}" if inc is not None else ""
 
     def build(self, recipient: str, payload: dict) -> dict:
         to = normalise_msisdn(recipient)
-        text = payload.get("text") or ""
-        if self.window_open(recipient):
-            return self._free_text(to, text)
-        return self._template(to, text)
+        template_id, _ = self.template_for(payload)
+        # No approved template for this message type yet? Free text is the only thing
+        # left to try. It fails with 802 outside a window, which is at least a loud,
+        # attributable failure rather than sending nothing.
+        if self.window_open(recipient) or not template_id:
+            return self._text_body(to, payload)
+        return self._template_body(to, payload)
 
     # --- send ----------------------------------------------------------------
+
     def send(self, recipient: str, payload: dict) -> str:
         if not self.configured:
             return self._fallback.send(recipient, payload)
-        url = f"{self.base}/{self.api_version}/{self.phone_number_id}/messages"
-        resp = requests.post(
-            url, json=self.build(recipient, payload),
-            headers={"Authorization": f"Bearer {self.token}",
-                     "Content-Type": "application/json"},
-            timeout=15,
-        )
-        if resp.status_code >= 400:
-            # Surface Meta's own error text — "template does not exist" and "re-engagement
-            # message" (window closed) are the two you will actually hit, and the generic
-            # HTTPError hides both. Raising here lets the outbox retry with backoff.
-            raise RuntimeError(
-                f"WhatsApp send failed {resp.status_code}: {resp.text[:400]}")
-        data = resp.json() if resp.content else {}
+
+        resp = requests.post(f"{self.base}{PUSH_PATH}",
+                             json=self.build(recipient, payload),
+                             headers={"Content-Type": "application/json"},
+                             timeout=15)
+        # Deliberately not raise_for_status(): PickyAssist answers 200 with an error body,
+        # so the HTTP status tells you almost nothing. The body's `status` is the truth.
         try:
-            return data["messages"][0]["id"]          # wamid.XXXX
-        except (KeyError, IndexError, TypeError):
-            return "wa-sent"
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            raise RuntimeError(
+                f"PickyAssist returned unparseable body (HTTP {resp.status_code}): "
+                f"{resp.text[:300]}")
+
+        status = data.get("status")
+        if status != STATUS_ACCEPTED:
+            detail = PERMANENT_STATUSES.get(status)
+            message = (f"PickyAssist rejected the send: status={status} "
+                       f"{data.get('message', '')}".strip())
+            if detail:
+                raise PermanentSendError(f"{message} — {detail}")
+            raise RuntimeError(message)
+
+        # status 100 means ACCEPTED, not delivered. Never raise past this point: the send
+        # has already happened, and raising would make the outbox send it a second time.
+        items = data.get("data") or []
+        msg_id = items[0].get("msg_id") if items and isinstance(items[0], dict) else None
+        return str(msg_id or data.get("push_id") or "pa-accepted")[:128]
+
+
+# The registry and tests refer to WhatsAppNotifier; this alias is for anyone reading
+# call sites and wondering which provider is behind it.
+PickyAssistNotifier = WhatsAppNotifier

@@ -12,6 +12,7 @@ import json
 import logging
 
 from .. import clock, db
+from ..notifiers.base import PermanentSendError
 from . import events
 
 _BASE_BACKOFF_S = 5
@@ -67,7 +68,11 @@ def drain(cfg, limit: int = 50) -> dict:
             sent += 1
         except Exception as exc:  # delivery failed — retry with backoff
             attempts = r["attempts"] + 1
-            if attempts >= _MAX_ATTEMPTS:
+            # A permanent failure retried is a permanent failure eight times over, and
+            # this queue is serial: those ~10 minutes of backoff are spent holding up
+            # every other page behind it. Fail it now and move on.
+            permanent = isinstance(exc, PermanentSendError)
+            if permanent or attempts >= _MAX_ATTEMPTS:
                 with db.transaction() as c:
                     c.execute(
                         "UPDATE outbox SET status='failed', attempts=? WHERE id=?",
@@ -83,9 +88,10 @@ def drain(cfg, limit: int = 50) -> dict:
                     )
                 retried += 1
             log.warning(
-                "outbox delivery failed id=%s channel=%s attempt=%s/%s: %s",
+                "outbox delivery %s id=%s channel=%s attempt=%s/%s: %s",
+                "failed permanently" if permanent else "failed",
                 r["id"], r["channel"], attempts, _MAX_ATTEMPTS, exc,
-                exc_info=attempts >= _MAX_ATTEMPTS,
+                exc_info=(permanent or attempts >= _MAX_ATTEMPTS),
             )
     return {"sent": sent, "failed": failed, "retried": retried}
 
