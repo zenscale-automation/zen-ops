@@ -243,7 +243,9 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     # and start the cycle again by asking for a fresh estimate. The re-ask says plainly
     # that the previous one lapsed; pretending it is a new question would throw away the
     # one fact that matters.
+    eta_generation = 0
     if action == "eta_check" and is_ticket:
+        eta_generation = (ticket["eta_misses"] or 0) + 1
         c.execute("UPDATE tickets SET eta_misses=eta_misses+1 WHERE id=?", (ticket["id"],))
         events.log(c, "ticket", ticket["id"], models.K_ETA_MISSED, actor="system",
                    detail={"promised_hours": ticket["eta_hours"],
@@ -336,7 +338,13 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     entity_tag = f"tkt:{esc_row['ticket_id']}" if is_ticket else f"inc:{esc_row['incident_id']}"
     for rcpt in recipients:
         payload = dict(base_payload, to_name=rcpt.name, to_role=esc_row["notify_role"])
-        dedupe = f"{entity_tag}:rung:{esc_row['rung']}:{rcpt.person_id}"
+        # The re-ask after a lapsed estimate lands on rung 0 AGAIN, so a key built from
+        # the rung alone collides with the original ask and INSERT IGNORE silently drops
+        # the message — the enforcement sentence never reaches a phone, and nothing
+        # anywhere records that it did not. The miss generation makes each cycle's ask
+        # its own message while restarts still dedupe correctly within a cycle.
+        gen = f":miss{eta_generation}" if eta_generation else ""
+        dedupe = f"{entity_tag}:rung:{esc_row['rung']}{gen}:{rcpt.person_id}"
         outbox.enqueue(c, rcpt.channel, rcpt.address, payload, dedupe, at=now)
 
     # Mark fired, log, and set first_notified_at on the ticket's first page.
