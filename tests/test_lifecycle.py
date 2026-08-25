@@ -104,8 +104,11 @@ def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
     expected = {r.address for r in routing.resolve(cfg, ask_role)}
     assert sent_to["recipient"] in expected, "prompt went to the on-duty asker"
 
+    # The reply comes from whoever the prompt was actually sent to — matching is by
+    # sender, so a reply from a number nobody messaged matches nothing, correctly.
     # Meta reports `from` without a '+'; routing.yaml stores it with one.
-    resp = _meta_post(client, _meta_envelope("919000000005", "1"))
+    replier = sent_to["recipient"].lstrip("+").replace(" ", "")
+    resp = _meta_post(client, _meta_envelope(replier, "1"))
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["matched"] is True and data["code"] == "weaving.electrical"
