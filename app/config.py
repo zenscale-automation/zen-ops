@@ -242,6 +242,34 @@ def merge_patch(target, patch):
     return out
 
 
+def compose_patch(first, second):
+    """Compose two merge patches into one — NOT the same operation as applying a patch.
+
+    merge_patch APPLIES a patch to a document, so a null means "delete this key" and is
+    executed immediately by dropping it. Composing patch onto patch has to do the
+    opposite: the null is the instruction, and it must SURVIVE so it can be executed
+    later against the YAML base.
+
+    Using merge_patch for both is why every deletion through the config API silently did
+    nothing. The stored override starts empty, so `{"people": {"store_desk": null}}`
+    composed onto `{}` popped a key that was not there and stored `{"people": {}}` — a
+    200 OK, an audit entry, a rising version number, and no change to the running system.
+    The same bug meant `placeholder: None` never cleared, so replacing the sample roster
+    through the admin UI could not unlock live mode, which is the one job it exists for.
+    """
+    if not isinstance(second, dict):
+        return second
+    if not isinstance(first, dict):
+        first = {}
+    out = dict(first)
+    for key, value in second.items():
+        if value is None:
+            out[key] = None                      # keep the tombstone
+        else:
+            out[key] = compose_patch(out.get(key), value)
+    return out
+
+
 def load_overrides() -> dict:
     """Patches stored by the config API. Missing table (pre-migration) is not fatal.
 
@@ -441,6 +469,42 @@ def validate(cfg: Config) -> None:
         problems.append(
             "routing.yaml: route_all_to_default is on but no default_owner is set"
         )
+
+    # Every person must keep a way to be reached. Without this, clearing a phone number
+    # leaves a person who is still rostered, still resolves to a Recipient, and therefore
+    # still satisfies the default_owner backstop at routing.py:52 — but whose channel is
+    # now "log". The page is written to a file, the outbox says sent, and the event log
+    # says notified. A silent blackout, entered by tabbing out of a text box.
+    for pid, person in people.items():
+        if not (person.get("whatsapp") or person.get("gchat_space")):
+            problems.append(
+                f"routing.yaml: '{pid}' has no whatsapp number and no chat space — they "
+                "can be rostered but never actually reached, and a page to them would be "
+                "silently written to a log file")
+
+    # `owner` is reserved: escalation rungs use it to mean "the team that owns this
+    # reason". A team actually named `owner` captures every rung in every ladder.
+    if "owner" in cfg.roles:
+        problems.append("routing.yaml: 'owner' is a reserved role name — escalation "
+                        "ladders use it to mean the reason's own owning team")
+
+    # The backstop has to actually exist and be reachable, or it is not a backstop. This
+    # is checked here rather than in the admin API because config_api and a hand-edited
+    # YAML reach the same runtime through a different door.
+    owner_id = cfg.routing.get("default_owner")
+    if owner_id:
+        backstop = people.get(owner_id)
+        if not backstop:
+            problems.append(
+                f"routing.yaml: default_owner '{owner_id}' is not a person. Every "
+                "notification that resolves to nobody falls back to them, so this is the "
+                "last line before a fault is silently unassigned")
+        elif not (backstop.get("whatsapp") or backstop.get("gchat_space")):
+            problems.append(
+                f"routing.yaml: default_owner '{owner_id}' has no contact channel")
+    elif cfg.route_all_to_default:
+        problems.append("routing.yaml: route_all_to_default is on but default_owner is "
+                        "not set — every notification would resolve to nobody")
 
     # shifts present
     if not cfg.shifts:

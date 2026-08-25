@@ -114,7 +114,9 @@ def patch_scope(scope: str):
 
     cfg = current_app.config["OPS_CFG"]
     overrides = config.load_overrides()
-    overrides[scope] = config.merge_patch(overrides.get(scope, {}), patch)
+    # compose_patch, not merge_patch: this is patch-onto-patch, so a null is an
+    # instruction that must survive to be executed against the YAML base later.
+    overrides[scope] = config.compose_patch(overrides.get(scope, {}), patch)
 
     try:
         config.validate(config.candidate(cfg, overrides))

@@ -11,8 +11,12 @@ Resolutions are processed first so a machine that has already resumed is never p
 
 from __future__ import annotations
 
+import logging
+
 from .. import clock, config, db
 from . import escalation, incidents
+
+log = logging.getLogger("ops.ticker")
 
 
 def tick(cfg: "config.Config") -> dict:
@@ -33,14 +37,33 @@ def tick(cfg: "config.Config") -> dict:
         " ORDER BY due_at, id",
         (now,),
     )
-    fired = 0
+    fired = wedged = 0
     for r in due:
-        with db.transaction() as c:
-            fresh = c.execute(
-                "SELECT * FROM escalations WHERE id=? AND status='pending'", (r["id"],)
-            ).fetchone()
-            if fresh:
-                escalation.fire(c, cfg, fresh)
-                fired += 1
+        # Per-row, because the query is ORDER BY due_at and a row that raises is rolled
+        # back still pending with a past due_at — so it is first again on the next tick,
+        # and on every tick after that. One unfireable rung would stop EVERY escalation
+        # in the plant, permanently, with no symptom but a frozen heartbeat.
+        try:
+            with db.transaction() as c:
+                fresh = c.execute(
+                    "SELECT * FROM escalations WHERE id=? AND status='pending'", (r["id"],)
+                ).fetchone()
+                if fresh:
+                    escalation.fire(c, cfg, fresh)
+                    fired += 1
+        except Exception:
+            wedged += 1
+            log.exception(
+                "escalation %s could not fire — parking it so the queue keeps moving",
+                r["id"])
+            # Park it out of the way. Cancelling loses the fault; leaving it pending
+            # blocks everyone behind it. `wedged` is surfaced on /health so this is not
+            # a quiet burial.
+            try:
+                with db.transaction() as c:
+                    c.execute("UPDATE escalations SET status='wedged' WHERE id=?",
+                              (r["id"],))
+            except Exception:
+                log.exception("could not park escalation %s", r["id"])
 
-    return {"resolved": len(resolving), "fired": fired}
+    return {"resolved": len(resolving), "fired": fired, "wedged": wedged}

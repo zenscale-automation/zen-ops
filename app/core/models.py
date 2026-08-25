@@ -99,3 +99,8 @@ K_CLOSED = "closed"
 K_REOPENED = "reopened"
 K_RESOLVED = "resolved"
 K_PROMPTED = "prompted"
+# A rung fired but resolved to nobody. Deliberately NOT K_NOTIFIED: the event log's whole
+# premise is that it is the record of what happened, and writing "notified" when nobody
+# was notified corrupts the one table you would reach for afterwards to find out why
+# nobody came.
+K_UNROUTED = "unrouted"

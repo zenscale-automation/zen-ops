@@ -14,8 +14,12 @@ next rung, queue the next notification".
 
 from __future__ import annotations
 
+import logging
+
 from .. import clock, config
 from . import events, models, outbox, prompts, routing
+
+log = logging.getLogger("ops.escalation")
 
 
 # --- scheduling ------------------------------------------------------------
@@ -202,9 +206,14 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
         event_kind = models.K_NOTIFIED if esc_row["rung"] == 0 else models.K_ESCALATED
 
     # Queue one message per recipient (or a single 'log' message if nobody resolved).
-    if not recipients:
+    unrouted = not recipients
+    if unrouted:
+        # Keep the synthetic recipient so the message is still written somewhere rather
+        # than vanishing — but do not let this be recorded as a page. See event_kind below.
         recipients = [routing.Recipient(person_id="unrouted", name="unrouted",
                                         channel="log", address="unrouted")]
+        log.error("escalation %s for role '%s' resolved to NOBODY — no one has been "
+                  "called for this fault", esc_row["id"], esc_row["notify_role"])
     entity_tag = f"tkt:{esc_row['ticket_id']}" if is_ticket else f"inc:{esc_row['incident_id']}"
     for rcpt in recipients:
         payload = dict(base_payload, to_name=rcpt.name, to_role=esc_row["notify_role"])
@@ -218,6 +227,8 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
 
     entity = "ticket" if is_ticket else "incident"
     entity_id = esc_row["ticket_id"] if is_ticket else esc_row["incident_id"]
+    if unrouted:
+        event_kind = models.K_UNROUTED
     events.log(c, entity, entity_id, event_kind, actor="system",
                detail={"rung": esc_row["rung"], "role": esc_row["notify_role"],
                        "recipients": [r.person_id for r in recipients],

@@ -101,7 +101,9 @@ def _apply(scope: str, patch: dict, actor: str, summary: dict):
     """
     cfg = _cfg()
     overrides = config.load_overrides()
-    overrides[scope] = config.merge_patch(overrides.get(scope, {}), patch)
+    # compose_patch, not merge_patch: this is patch-onto-patch, so a null is an
+    # instruction that must survive to be executed against the YAML base later.
+    overrides[scope] = config.compose_patch(overrides.get(scope, {}), patch)
 
     try:
         config.validate(config.candidate(cfg, overrides))
@@ -177,6 +179,22 @@ def _roster_of(cfg, team: str) -> dict:
     if "all" in spec:
         return {"all": list(spec["all"] or [])}
     return {k: list(spec.get(k) or []) for k in SHIFT_KEYS}
+
+
+def _roster_patch(roster: dict) -> dict:
+    """A roster as a merge patch that genuinely REPLACES what is there.
+
+    roles.<team> is a dict, so merge_patch recurses and only the per-shift lists replace.
+    Any bucket present in the stored config and absent here survives — and
+    role_person_ids checks "all" before A/B/C, so a leftover 24/7 bucket silently wins
+    over every named shift. Sending the absent buckets as explicit nulls is what makes
+    "this is the roster now" mean what it says.
+    """
+    out = dict(roster)
+    for bucket in ("all",) + SHIFT_KEYS:
+        if bucket not in out:
+            out[bucket] = None
+    return out
 
 
 def _empty_shifts(roster: dict) -> list:
@@ -305,8 +323,18 @@ def update_person(pid: str):
     body = request.get_json(silent=True) or {}
     patch = {}
     for field in ("name", "whatsapp", "gchat_space"):
-        if field in body:
-            patch[field] = str(body[field]).strip() if body[field] else None
+        if field not in body:
+            continue
+        value = str(body[field] or "").strip()
+        if not value:
+            # Emptying a field is not how somebody leaves. Clearing the only contact
+            # channel would leave a person who is still rostered and still resolves to a
+            # recipient, but whose pages go to a log file — so an accidental blur on an
+            # empty box would silently stop the plant being called.
+            return _err(400, f"{field} cannot be emptied here",
+                        hint="to remove somebody, take them off every shift and then "
+                             "delete them — that path checks what depends on them first")
+        patch[field] = value
     if not patch:
         return _err(400, "nothing to change",
                     editable=["name", "whatsapp", "gchat_space"])
@@ -442,9 +470,13 @@ def set_roster(tid: str):
                     id=tid, empty_shifts=empty, used_by=_teams_using(cfg, tid),
                     hint="assign someone to every shift — one person may cover two teams")
 
-    # roles.<tid> is replaced wholesale, not merged: a merge patch cannot remove a person
-    # from a shift list, and half-applying a roster is worse than refusing it.
-    return _apply("routing", {"roles": {tid: roster}}, _actor(),
+    # roles.<tid> is a DICT, so merge_patch recurses into it and only the per-shift lists
+    # replace. A bucket present in the base and absent here therefore SURVIVES — and
+    # role_person_ids checks "all" before A/B/C, so splitting a 24/7 team into three
+    # named shifts was accepted, echoed back, and silently ignored: the original
+    # always-on person kept taking every page. The absent buckets are sent as explicit
+    # nulls so the replacement is real.
+    return _apply("routing", {"roles": {tid: _roster_patch(roster)}}, _actor(),
                   {"updated": "roster", "id": tid, "roster": roster})
 
 
@@ -485,11 +517,13 @@ def add_to_shift(tid: str, shift: str):
         if pid in (cfg.people or {}):
             return _err(409, "a person with that id already exists — pass person_id to "
                              "add the existing one", id=pid)
-        person = {"name": name}
-        if body.get("whatsapp"):
-            person["whatsapp"] = str(body["whatsapp"]).strip()
-        if body.get("gchat_space"):
-            person["gchat_space"] = str(body["gchat_space"]).strip()
+        person = {"name": name[:120]}
+        for field, cap in (("whatsapp", 32), ("gchat_space", 120)):
+            if body.get(field):
+                value = str(body[field]).strip()
+                if len(value) > cap:
+                    return _err(400, f"{field} is too long", max_length=cap)
+                person[field] = value
         if not person.get("whatsapp") and not person.get("gchat_space"):
             return _err(400, "give the person a whatsapp number or a chat space — "
                              "without one they can be rostered but never reached")
@@ -501,7 +535,7 @@ def add_to_shift(tid: str, shift: str):
         return _err(409, "already on that shift", person_id=pid, team=tid, shift=bucket)
 
     roster[bucket] = list(roster.get(bucket, [])) + [pid]
-    patch = {"roles": {tid: roster}}
+    patch = {"roles": {tid: _roster_patch(roster)}}
     if people_patch:
         patch["people"] = people_patch
     return _apply("routing", patch, _actor(),
@@ -533,7 +567,7 @@ def remove_from_shift(tid: str, shift: str, pid: str):
                     team=tid, shift=bucket, used_by=_teams_using(cfg, tid),
                     hint="add a replacement first; one person may cover two teams")
 
-    return _apply("routing", {"roles": {tid: roster}}, _actor(),
+    return _apply("routing", {"roles": {tid: _roster_patch(roster)}}, _actor(),
                   {"removed": pid, "from": tid, "shift": bucket})
 
 
@@ -609,10 +643,23 @@ def set_plan(plan_id: str):
             return _err(400, f"step {i + 1}: wait_minutes must be a whole number")
         if wait < 0:
             return _err(400, f"step {i + 1}: wait_minutes cannot be negative")
+        # Bounded because this reaches clock.plus_minutes, and a plausible-looking large
+        # number raises OverflowError deep inside the ticker transaction. A week is far
+        # beyond any real escalation and still leaves room for a deliberate long tail.
+        if wait > 7 * 24 * 60:
+            return _err(422, f"step {i + 1}: {wait} minutes is longer than a week",
+                        hint="escalation steps are minutes to hours, not days")
         running += wait
         rung = {"after_minutes": running, "notify": notify}
-        if s.get("action"):
-            rung["action"] = s["action"]
+        action = s.get("action")
+        if action:
+            # Allow-list rather than pass-through: this lands in escalations.action
+            # VARCHAR(32), and the engine only understands these two. An arbitrary string
+            # either truncates or fires a rung that does nothing anybody asked for.
+            if action not in ("ask_reason", "notify"):
+                return _err(422, f"step {i + 1}: unknown action",
+                            action=str(action)[:60], known=["ask_reason", "notify"])
+            rung["action"] = action
         rungs.append(rung)
 
     # The reason prompt is driven entirely by the `unknown` plan's ask_reason steps.

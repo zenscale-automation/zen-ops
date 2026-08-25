@@ -393,7 +393,13 @@ class WeavingLoomApiSource:
             # Suppress the *incidents*, but never keep claiming the looms are RUNNING:
             # the state must not lie while the feed is dark.
             for ref in stale:
-                self._last[ref] = "OFFLINE"
+                # NOT "OFFLINE": the stopped branch treats OFFLINE as "an incident is
+                # already open for this asset" and skips opening one. No incident was
+                # opened here — the whole point of this branch is that a dark feed is a
+                # data-path fault, not 44 shed faults. Marking it OFFLINE meant a loom
+                # that genuinely stopped while the feed was dark was never reported at
+                # all, because recovery found prev == OFFLINE and stayed quiet.
+                self._last[ref] = "DARK"
             return []
 
         events: list = []
