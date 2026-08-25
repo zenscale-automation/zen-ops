@@ -649,9 +649,10 @@ def set_plan(plan_id: str):
             # Allow-list rather than pass-through: this lands in escalations.action
             # VARCHAR(32), and the engine only understands these two. An arbitrary string
             # either truncates or fires a rung that does nothing anybody asked for.
-            if action not in ("ask_reason", "notify"):
+            if action not in ("ask_reason", "ask_eta", "notify"):
                 return _err(422, f"step {i + 1}: unknown action",
-                            action=str(action)[:60], known=["ask_reason", "notify"])
+                            action=str(action)[:60],
+                            known=["ask_reason", "ask_eta", "notify"])
             rung["action"] = action
         rungs.append(rung)
 
@@ -1093,3 +1094,119 @@ def clear_offplan(asset_ref: str):
     return jsonify({"ok": True, "asset_ref": asset_ref, "was_off_plan": bool(n)})
 
 
+
+
+# --------------------------------------------------------------------------- report
+
+@bp.get("/api/admin/report")
+def accountability_report():
+    """The numbers the plant head enforces with.
+
+    Everything here is computed from records written at the moment things happened —
+    promises made (eta_set), promises broken (eta_missed), reasons given, machines
+    resumed — never from anybody's recollection. "Who is the biggest defaulter" is the
+    first question this exists to answer, so it is the first key in the response.
+
+    ?days=N bounds the window (default 30).
+    """
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    try:
+        days = max(1, min(365, int(request.args.get("days", 30))))
+    except (TypeError, ValueError):
+        return _err(400, "days must be a whole number")
+    since = clock.plus_seconds(-days * 86400)
+
+    people = cfg.people or {}
+    name_of = lambda pid: (people.get(pid) or {}).get("name", pid)  # noqa: E731
+
+    # --- promises, per person ----------------------------------------------------
+    tickets = db.query(
+        "SELECT t.id, t.code, t.owner_role, t.opened_at, t.closed_at, t.close_reason,"
+        " t.status, t.eta_hours, t.eta_due_at, t.eta_by, t.eta_misses, a.asset_ref"
+        " FROM tickets t JOIN incidents i ON i.id=t.incident_id"
+        " JOIN assets a ON a.id=i.asset_id"
+        " WHERE t.opened_at>=?", (since,))
+
+    by_person: dict = {}
+    unanswered_by_team: dict = {}
+    for t in tickets:
+        if t["eta_by"]:
+            row = by_person.setdefault(t["eta_by"], {
+                "person": name_of(t["eta_by"]), "promises": 0, "misses": 0,
+                "kept": 0, "open_now": 0, "overrun_minutes": 0})
+            row["promises"] += 1
+            row["misses"] += t["eta_misses"] or 0
+            if t["status"] == "closed" and t["close_reason"] == "asset_resumed":
+                if not t["eta_misses"]:
+                    row["kept"] += 1
+                elif t["eta_due_at"] and t["closed_at"] and t["closed_at"] > t["eta_due_at"]:
+                    over = (clock.parse(t["closed_at"])
+                            - clock.parse(t["eta_due_at"])).total_seconds() / 60
+                    row["overrun_minutes"] += max(0, round(over))
+            elif t["status"] != "closed":
+                row["open_now"] += 1
+        else:
+            # Asked and never answered — a defaulter statistic of its own, attributed to
+            # the team because no individual ever put their name on it.
+            unanswered_by_team[t["owner_role"]] = \
+                unanswered_by_team.get(t["owner_role"], 0) + 1
+
+    defaulters = sorted(by_person.values(),
+                        key=lambda r: (-r["misses"], -r["overrun_minutes"]))
+    for r in defaulters:
+        r["kept_pct"] = round(100 * r["kept"] / r["promises"]) if r["promises"] else None
+
+    # --- downtime, per reason and per machine -------------------------------------
+    def rollup(group_sql, key):
+        rows = db.query(
+            f"SELECT {group_sql} k, COUNT(*) n, COALESCE(SUM(i.duration_s),0) s"
+            "  FROM incidents i LEFT JOIN incident_reasons ir ON ir.incident_id=i.id"
+            "  JOIN assets a ON a.id=i.asset_id"
+            " WHERE i.opened_at>=? AND i.status='resolved'"
+            f" GROUP BY {group_sql} ORDER BY s DESC", (since,))
+        return [{key: r["k"] or "(no reason given)", "stops": r["n"],
+                 "downtime_minutes": round(r["s"] / 60)} for r in rows]
+
+    by_reason = rollup("ir.code", "reason")
+    for r in by_reason:
+        if r["reason"] != "(no reason given)":
+            r["label"] = cfg.label(r["reason"])
+    by_machine = rollup("a.asset_ref", "machine")
+
+    # --- how fast reasons come back (supervisor-side accountability) --------------
+    ask = db.query(
+        "SELECT i.id, i.opened_at, MIN(ir.at) reason_at"
+        "  FROM incidents i JOIN incident_reasons ir ON ir.incident_id=i.id"
+        " WHERE i.opened_at>=? AND ir.method='reply'"
+        " GROUP BY i.id, i.opened_at", (since,))
+    waits = sorted(
+        (clock.parse(r["reason_at"]) - clock.parse(r["opened_at"])).total_seconds() / 60
+        for r in ask if r["reason_at"])
+    reason_response = None
+    if waits:
+        reason_response = {
+            "replies": len(waits),
+            "median_minutes": round(waits[len(waits) // 2]),
+            "p90_minutes": round(waits[int(len(waits) * 0.9)]),
+        }
+
+    return jsonify({
+        "window_days": days,
+        "since": since,
+        "defaulters": defaulters,
+        "asked_but_never_estimated": unanswered_by_team,
+        "downtime_by_reason": by_reason,
+        "downtime_by_machine": by_machine,
+        "reason_response": reason_response,
+        "notes": {
+            "defaulters": "Sorted worst first: most missed estimates, then most minutes "
+                          "over their own promise. Computed from events recorded when "
+                          "each promise was made and broken.",
+            "asked_but_never_estimated": "Tickets where the estimate question got no "
+                                         "answer at all, per team — nobody put their "
+                                         "name on a time.",
+        },
+    })

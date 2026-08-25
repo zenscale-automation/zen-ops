@@ -150,6 +150,12 @@ class WhatsAppNotifier:
                 self._minutes_down(payload),         # {{2}} 17
                 str(int(reprompt or 0)),             # {{3}} 25
             ]
+        # Everything else — escalation pages AND the hours-estimate question. The estimate
+        # question virtually always rides the free-text path (build() checks the window
+        # first, and it is sent seconds after the person's own reply, which opens it);
+        # this template shape is only the out-of-window fallback, where "still down,
+        # please attend" is the best an approved template can say. Their next reply
+        # reopens the window and the follow-up ask goes as the real question.
         return self.escalation_template, [
             self._asset_label(payload),              # {{1}} Weaving Loom 91
             payload.get("reason_label") or "Not yet reported",   # {{2}} Electrical fault

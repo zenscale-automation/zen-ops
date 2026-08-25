@@ -153,6 +153,35 @@ def _schedule_next(c, cfg: "config.Config", esc_row, base_iso: str, ladder: list
     )
 
 
+def set_eta(cfg: "config.Config", ticket_id: int, hours: int,
+            actor: str = "unknown", at: str | None = None) -> dict:
+    """The fixer names their deadline; all chasing stops for exactly that long.
+
+    That is the whole bargain of the loop: answer, and the system leaves you alone until
+    your own estimate runs out. Every pending rung for the ticket is cancelled and one
+    eta_check row is scheduled at +hours. If the machine is still stopped when it fires,
+    fire() counts the miss and asks again — and the misses are what the accountability
+    report is built from.
+    """
+    at = at or clock.now_iso()
+    due = clock.plus_minutes(hours * 60, base=clock.parse(at))
+    with db.transaction() as c:
+        ticket = c.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+        if ticket is None or ticket["status"] == "closed":
+            return {"ok": False, "why": "ticket is closed"}
+        c.execute("UPDATE tickets SET eta_hours=?, eta_due_at=?, eta_by=? WHERE id=?",
+                  (hours, due, actor, ticket_id))
+        c.execute("UPDATE escalations SET status='cancelled'"
+                  " WHERE ticket_id=? AND status='pending'", (ticket_id,))
+        _insert_rung(c, ticket_id=ticket_id, incident_id=None, rung=0,
+                     notify_role=ticket["owner_role"], action="eta_check",
+                     due_at=due, trigger="eta")
+        events.log(c, "ticket", ticket_id, models.K_ETA_SET, actor=actor,
+                   detail={"hours": hours, "due_at": due},
+                   department=cfg.department, at=at)
+    return {"ok": True, "hours": hours, "due_at": due}
+
+
 # --- cancellation ----------------------------------------------------------
 
 def cancel_for_incident(c, incident_id: int) -> None:
@@ -209,8 +238,39 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
                                  owner_role=owner_role)
     action = esc_row["action"]
 
+    # An expired estimate. The machine is still stopped (the resumed check above already
+    # returned), so the promise was missed: count it — this row is the defaulter metric —
+    # and start the cycle again by asking for a fresh estimate. The re-ask says plainly
+    # that the previous one lapsed; pretending it is a new question would throw away the
+    # one fact that matters.
+    if action == "eta_check" and is_ticket:
+        c.execute("UPDATE tickets SET eta_misses=eta_misses+1 WHERE id=?", (ticket["id"],))
+        events.log(c, "ticket", ticket["id"], models.K_ETA_MISSED, actor="system",
+                   detail={"promised_hours": ticket["eta_hours"],
+                           "promised_by": ticket["eta_by"],
+                           "promised_at": ticket["eta_due_at"]},
+                   department=cfg.department, at=now)
+        action = "ask_eta"
+        esc_row = dict(esc_row, action="ask_eta")
+
     # Build the payload once; recipients differ only by address.
-    if action == "ask_reason":
+    if action == "ask_eta" and is_ticket:
+        missed = ticket["eta_hours"] if esc_row["trigger"] == "eta" else None
+        text = prompts.render_eta(cfg, asset_ref, cfg.label(code, "en"),
+                                  missed_hours=missed)
+        base_payload = {
+            "type": "eta_request",
+            "text": text,
+            "asset_ref": asset_ref,
+            "asset_label": asset_ref.replace("_", " ").title(),
+            "reason_label": cfg.label(code, "en"),
+            "opened_at": incident["opened_at"],
+            "ticket_id": ticket["id"],
+            "incident_id": incident["id"],
+            "rung": esc_row["rung"],
+        }
+        event_kind = models.K_NOTIFIED
+    elif action == "ask_reason":
         # What the message PROMISES has to come from the same place as what the timers
         # DO. It used to read reasons.yaml's reprompt_after_minutes while the schedule
         # came from escalation.yaml's unknown ladder, so the two drifted the moment

@@ -99,3 +99,54 @@ def parse(cfg: "config.Config", text: str) -> tuple[str, str | None] | None:
         if o["code"].lower() == t.strip().lower():
             return o["code"], None
     return None
+
+# --- the fixer's time estimate ---------------------------------------------------
+
+ETA_MAX_HOURS = 24
+# Capped at a day, for two reasons. A longer number is not an estimate, it is parking —
+# and the WhatsApp free-text window is 24 hours from the person's last message, so any
+# re-ask inside the cap can still be sent as plain text rather than needing a template.
+
+
+def render_eta(cfg: "config.Config", asset_ref: str, reason_label: str,
+               missed_hours: int | None = None) -> str:
+    """The question that closes the loop: the fixer names their own deadline.
+
+    The snooze that follows is the bargain — answer, and the system stops nagging you
+    for exactly that long. `missed_hours` set means a previous estimate expired with the
+    machine still stopped; saying so plainly is the enforcement, and pretending it is a
+    fresh question would waste the one fact that matters.
+    """
+    label = asset_ref.replace("_", " ").title()
+    if missed_hours is not None:
+        head = (f"{label} is STILL stopped — the {missed_hours} hour"
+                f"{'s' if missed_hours != 1 else ''} estimated for "
+                f"{reason_label} have passed.")
+    else:
+        head = f"{label} has stopped: {reason_label}."
+    return "\n".join([
+        head,
+        "",
+        "How many hours will the fix take?",
+        f"Reply with a number (1 = under an hour, up to {ETA_MAX_HOURS}).",
+        "We will not chase you again until that time is up.",
+    ])
+
+
+def parse_eta(text: str) -> int | None:
+    """An hours estimate: a bare number, 1..ETA_MAX_HOURS. None if it is not one.
+
+    Deliberately strict — this shares an inbox with the numbered reason menu, so an
+    ambiguous parse here would eat replies meant for something else. Anything that is
+    not just a number is not an estimate.
+    """
+    t = (text or "").strip()
+    if not t or not t.replace(".", "", 1).isdigit():
+        return None
+    try:
+        hours = int(float(t))
+    except ValueError:
+        return None
+    if hours < 1:
+        hours = 1              # "0.5" etc: under an hour is the floor, per the prompt
+    return hours if hours <= ETA_MAX_HOURS else None

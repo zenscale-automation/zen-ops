@@ -21,7 +21,7 @@ import os
 from flask import Blueprint, current_app, jsonify, request
 
 from .. import clock, db
-from ..core import incidents, prompts
+from ..core import escalation, incidents, prompts
 from ..notifiers.whatsapp import normalise_msisdn
 
 bp = Blueprint("webhooks", __name__)
@@ -164,6 +164,35 @@ def _person_by_contact(cfg, channel: str, address: str) -> str | None:
     return None
 
 
+def _last_question_to(sender: str, channel: str) -> dict | None:
+    """The most recent outstanding question we asked this person, so a bare number in
+    their reply answers THAT — the reason menu and the hours estimate are both numeric,
+    and guessing between them by content alone is impossible.
+
+    Most-recent-wins mirrors how the person experiences their own chat: the question at
+    the bottom of the screen is the one they are answering.
+    """
+    rows = db.query(
+        "SELECT payload FROM outbox WHERE recipient=? AND channel=?"
+        " ORDER BY id DESC LIMIT 20",
+        (sender, channel),
+    )
+    for r in rows:
+        p = json.loads(r["payload"]) or {}
+        if p.get("type") == "eta_request" and p.get("ticket_id"):
+            t = db.query_one("SELECT status, eta_due_at FROM tickets WHERE id=?",
+                             (p["ticket_id"],))
+            # Outstanding = ticket still open and either never answered or the previous
+            # estimate has already expired (a re-ask is on its way or arrived).
+            if t and t["status"] != "closed" and (
+                    not t["eta_due_at"] or t["eta_due_at"] <= clock.now_iso()):
+                return {"kind": "eta", "ticket_id": p["ticket_id"]}
+        if p.get("type") == "reason_prompt" and p.get("incident_id"):
+            if _incident_open_no_reason(p["incident_id"]):
+                return {"kind": "reason", "incident_id": p["incident_id"]}
+    return None
+
+
 def _incident_open_no_reason(incident_id: int) -> bool:
     r = db.query_one(
         "SELECT i.status, (SELECT COUNT(*) FROM incident_reasons ir"
@@ -236,6 +265,26 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
         stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
         if stored_sender:
             db.execute("UPDATE inbound_raw SET sender=? WHERE id=?", (stored_sender, raw_id))
+
+    # A bare number answers whichever question this person was asked last. The hours
+    # estimate is checked FIRST because it is the newer question by construction — it is
+    # only ever sent after they have already answered the reason menu.
+    stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
+    question = _last_question_to(stored_sender, channel)
+    if question and question["kind"] == "eta":
+        hours = prompts.parse_eta(text)
+        if hours is not None:
+            actor = _person_by_contact(cfg, channel, sender) or sender
+            res = escalation.set_eta(cfg, question["ticket_id"], hours, actor=actor)
+            if res.get("ok"):
+                db.execute("UPDATE inbound_raw SET matched_ticket_id=? WHERE id=?",
+                           (question["ticket_id"], raw_id))
+                return jsonify({"matched": True, "kind": "eta",
+                                "ticket_id": question["ticket_id"],
+                                "hours": hours, "due_at": res["due_at"],
+                                "raw_id": raw_id}), 200
+        # Not a parseable estimate: fall through — it may be a reason for a DIFFERENT
+        # incident, and eating it here would lose that answer.
 
     incident_id = _find_incident(cfg, channel, sender, context_msg_id, asset_ref)
     parsed = prompts.parse(cfg, text)

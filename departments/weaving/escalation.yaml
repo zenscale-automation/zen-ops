@@ -10,17 +10,29 @@ department: weaving
 # exists, and pretending to escalate to people who do not exist yet would be theatre.
 ladders:
   default:
-    - { after_minutes: 0,  notify: owner }
+    # Rung 0 asks the fixer for their own time estimate. Their answer SNOOZES this whole
+    # ladder for exactly that long — the chase only resumes if the machine is still
+    # stopped when their estimate expires, and that expiry is counted as a miss. The
+    # rungs below only fire if the question itself goes unanswered.
+    - { after_minutes: 0,  notify: owner, action: ask_eta }
     - { after_minutes: 30, notify: owner }
     - { after_minutes: 75, notify: owner, repeat_every_minutes: 60 }
 
   weaving.electrical:
-    - { after_minutes: 0,  notify: owner }
+    # Rung 0 asks the fixer for their own time estimate. Their answer SNOOZES this whole
+    # ladder for exactly that long — the chase only resumes if the machine is still
+    # stopped when their estimate expires, and that expiry is counted as a miss. The
+    # rungs below only fire if the question itself goes unanswered.
+    - { after_minutes: 0,  notify: owner, action: ask_eta }
     - { after_minutes: 25, notify: owner }
     - { after_minutes: 60, notify: owner, repeat_every_minutes: 60 }
 
   weaving.mechanical:
-    - { after_minutes: 0,  notify: owner }
+    # Rung 0 asks the fixer for their own time estimate. Their answer SNOOZES this whole
+    # ladder for exactly that long — the chase only resumes if the machine is still
+    # stopped when their estimate expires, and that expiry is counted as a miss. The
+    # rungs below only fire if the question itself goes unanswered.
+    - { after_minutes: 0,  notify: owner, action: ask_eta }
     - { after_minutes: 35, notify: owner }
     - { after_minutes: 90, notify: owner, repeat_every_minutes: 60 }
 

@@ -104,3 +104,7 @@ K_PROMPTED = "prompted"
 # was notified corrupts the one table you would reach for afterwards to find out why
 # nobody came.
 K_UNROUTED = "unrouted"
+# The fixer's promise, and the promise broken. eta_missed is the enforcement record:
+# "biggest defaulter" is computed from these rows, not from anybody's recollection.
+K_ETA_SET = "eta_set"
+K_ETA_MISSED = "eta_missed"
