@@ -172,10 +172,12 @@ def _last_question_to(sender: str, channel: str) -> dict | None:
     Most-recent-wins mirrors how the person experiences their own chat: the question at
     the bottom of the screen is the one they are answering.
     """
+    # Same both-forms match as _find_incident strategy 3: the outbox stores the roster's
+    # "+91..." form while providers report bare digits, and comparing them raw never hits.
     rows = db.query(
-        "SELECT payload FROM outbox WHERE recipient=? AND channel=?"
+        "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
         " ORDER BY id DESC LIMIT 20",
-        (sender, channel),
+        (sender, "+" + sender if channel == "whatsapp" else sender, channel),
     )
     for r in rows:
         p = json.loads(r["payload"]) or {}
