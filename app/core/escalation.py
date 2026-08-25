@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from .. import clock, config
+from .. import clock, config, db
 from . import events, models, outbox, prompts, routing
 
 log = logging.getLogger("ops.escalation")
