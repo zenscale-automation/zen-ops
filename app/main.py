@@ -68,7 +68,13 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
 
     @app.get("/admin")
     def admin():
-        return send_from_directory(app.static_folder, "admin.html")
+        # no-store, not merely no-cache: this page changes far more often than it is
+        # loaded, and a cached copy is indistinguishable from a deploy that did not
+        # land. Revalidation is not worth the confusion it costs.
+        resp = send_from_directory(app.static_folder, "admin.html")
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
 
     if start_workers:
         SUPERVISOR.start(cfg)

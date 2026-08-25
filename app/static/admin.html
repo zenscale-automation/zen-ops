@@ -153,7 +153,8 @@
   </div>
   <div class="spacer"></div>
   <span class="pill" id="shadowPill"><span class="dot" id="shadowDot"></span><span id="shadowTxt">—</span></span>
-  <span class="pill">v<span id="version">—</span></span>
+  <span class="pill" title="config version · page build">v<span id="version">—</span>
+    <span style="opacity:.55">·</span><span id="build" style="opacity:.55">—</span></span>
   <label class="row tight" style="font-size:12px;color:var(--text-2)">
     admin key
     <input id="key" type="password" placeholder="X-Admin-Key" style="width:170px" autocomplete="off">
@@ -441,6 +442,9 @@ async function load() {
   }
   STATE = r.payload;
   $("#version").textContent = STATE.version;
+  // Page build, distinct from config version. Without it there is no way to tell a
+  // stale cached page from a deploy that did not land, and the two look identical.
+  if (STATE.build) $("#build").textContent = STATE.build;
   $("#sub").textContent = STATE.department + " · " + STATE.people.length +
     " people · " + STATE.teams.length + " teams";
 

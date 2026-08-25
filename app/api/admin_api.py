@@ -66,6 +66,18 @@ PLAN_ALIASES = {v: k for k, v in BUILTIN_PLANS.items()}
 
 # --------------------------------------------------------------------------- helpers
 
+def _build_id() -> str:
+    """Identifies the deployed page, so a stale browser cache and a deploy that never
+    landed stop looking identical. Derived from the mtime of the file actually served."""
+    try:
+        import os
+        from pathlib import Path
+        f = Path(__file__).resolve().parent.parent / "static" / "admin.html"
+        return str(int(os.stat(f).st_mtime))[-6:]
+    except Exception:
+        return "?"
+
+
 def _cfg():
     return current_app.config["OPS_CFG"]
 
@@ -243,6 +255,7 @@ def overview():
 
     return jsonify({
         "version": cfg.version,
+        "build": _build_id(),
         "department": cfg.department,
         "asset_type": cfg.asset_type,
         "shadow_mode": cfg.shadow_mode,
