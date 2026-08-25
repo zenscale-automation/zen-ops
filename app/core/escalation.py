@@ -89,6 +89,31 @@ def start_ladder(c, cfg: "config.Config", ticket_row, start_rung: int = 0,
     )
 
 
+def _minutes_to_next_step(ladder: list, rung: int) -> int:
+    """How long the person actually has before the next thing happens.
+
+    Derived from the ladder rather than a separate config key, so the promise in the
+    message and the timer behind it cannot disagree. Past the last rung, a repeating
+    ladder keeps asking on its own interval; a finite one has nothing after this, and
+    saying so honestly beats inventing a deadline.
+    """
+    try:
+        here = int(ladder[rung].get("after_minutes", 0))
+    except (IndexError, TypeError, ValueError):
+        return 0
+    if rung + 1 < len(ladder):
+        try:
+            return max(1, int(ladder[rung + 1].get("after_minutes", 0)) - here)
+        except (TypeError, ValueError):
+            return 0
+    last = ladder[-1] if ladder else {}
+    every = last.get("repeat_every_minutes") if isinstance(last, dict) else None
+    try:
+        return max(1, int(float(every))) if every else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _schedule_next(c, cfg: "config.Config", esc_row, base_iso: str, ladder: list) -> None:
     nxt = esc_row["rung"] + 1
     if nxt < len(ladder):
@@ -187,7 +212,15 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
 
     # Build the payload once; recipients differ only by address.
     if action == "ask_reason":
-        text = prompts.render(cfg, asset_ref, incident["opened_at"])
+        # What the message PROMISES has to come from the same place as what the timers
+        # DO. It used to read reasons.yaml's reprompt_after_minutes while the schedule
+        # came from escalation.yaml's unknown ladder, so the two drifted the moment
+        # either was tuned — and the supervisor was told "no reply in 15 minutes" while
+        # the system actually waited 25. A message that lies about its own deadline
+        # teaches people to ignore the deadline.
+        gap = _minutes_to_next_step(ladder, esc_row["rung"])
+        text = prompts.render(cfg, asset_ref, incident["opened_at"],
+                              reprompt_after_minutes=gap)
         base_payload = {
             "type": "reason_prompt",
             "text": text,
@@ -198,7 +231,7 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
             # whichever form its provider needs.
             "asset_label": asset_ref.replace("_", " ").title(),
             "opened_at": incident["opened_at"],
-            "reprompt_minutes": int(cfg.reprompt_after_minutes),
+            "reprompt_minutes": int(gap),
             "incident_id": incident["id"],
             "rung": esc_row["rung"],
             "options": prompts.options(cfg),

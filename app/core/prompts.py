@@ -50,12 +50,19 @@ def render(cfg: "config.Config", asset_ref: str, opened_at_iso: str,
     lines = [f"{label} has been stopped for {minutes} minutes.", "", "Reply with the reason:"]
     for o in options(cfg):
         lines.append(f"  {o['n']}  {o['label']}")
-    rep = reprompt_after_minutes if reprompt_after_minutes is not None else cfg.reprompt_after_minutes
-    lines += [
-        "",
-        "We will notify the right person straight away. If there is no reply "
-        f"in {int(rep)} minutes this goes to the shift in-charge.",
-    ]
+    # Passed in by the caller, computed from the ladder that will actually run. The
+    # fallback exists only so a direct call in a test still renders; nothing in the live
+    # path relies on it.
+    rep = reprompt_after_minutes if reprompt_after_minutes is not None \
+        else cfg.reprompt_after_minutes
+    rep = int(rep or 0)
+    if rep > 0:
+        lines += ["", "We will notify the right person straight away. If there is no "
+                      f"reply in {rep} minutes we will ask again."]
+    else:
+        # A finite ladder that has run out. Promising a follow-up that will not happen
+        # is worse than saying nothing.
+        lines += ["", "We will notify the right person straight away."]
     return "\n".join(lines)
 
 

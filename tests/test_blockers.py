@@ -194,3 +194,40 @@ def test_unrouted_is_not_recorded_as_notified(cfg, monkeypatch):
         "SELECT kind FROM events WHERE entity='incident' AND entity_id=?", (inc["id"],))]
     assert models.K_UNROUTED in kinds
     assert models.K_NOTIFIED not in kinds, "nobody was called; it must not say notified"
+
+
+# --- the message must not promise a deadline the timers do not keep -------------
+
+def test_the_prompt_quotes_the_gap_the_ladder_actually_uses(cfg):
+    """The message used to read reasons.yaml while the schedule came from
+    escalation.yaml, so tuning the ladder left the supervisor being told "no reply in 15
+    minutes" while the system waited 25. A message that lies about its own deadline
+    teaches people to ignore the deadline."""
+    from app.core import escalation as esc
+
+    ladder = cfg.unknown_ladder
+    first = next(i for i, r in enumerate(ladder) if r.get("action") == "ask_reason")
+    expected = ladder[first + 1]["after_minutes"] - ladder[first]["after_minutes"]
+
+    assert esc._minutes_to_next_step(ladder, first) == expected
+
+    text = __import__("app.core.prompts", fromlist=["prompts"]).render(
+        cfg, "loom_7", clock.now_iso(), reprompt_after_minutes=expected)
+    assert str(expected) in text
+
+
+def test_past_the_last_step_it_promises_nothing_it_cannot_keep(cfg):
+    from app.core import escalation as esc, prompts
+
+    finite = [{"after_minutes": 10, "notify": "engineering", "action": "ask_reason"}]
+    assert esc._minutes_to_next_step(finite, 0) == 0
+    text = prompts.render(cfg, "loom_7", clock.now_iso(), reprompt_after_minutes=0)
+    assert "ask again" not in text, "no follow-up is scheduled, so none may be promised"
+
+
+def test_a_repeating_last_step_promises_its_own_interval(cfg):
+    from app.core import escalation as esc
+
+    ladder = [{"after_minutes": 10, "notify": "engineering", "action": "ask_reason",
+               "repeat_every_minutes": 45}]
+    assert esc._minutes_to_next_step(ladder, 0) == 45

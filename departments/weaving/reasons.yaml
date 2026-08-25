@@ -3,8 +3,15 @@ asset_type: loom
 
 defaults:
   min_duration_seconds: 120    # shorter stops auto-code, never prompt
-  prompt_after_minutes: 15     # unknown stop -> ask
-  reprompt_after_minutes: 15   # no answer -> escalate instead
+
+  # prompt_after_minutes and reprompt_after_minutes used to live here and have been
+  # removed rather than left in place. Neither decided anything: the first had no
+  # readers at all, and the second only wrote a number into the message text while the
+  # actual schedule came from escalation.yaml's `unknown` ladder — so tuning the ladder
+  # left the message promising a deadline the timers did not keep. Both timings now come
+  # from the ladder, which is the thing that runs. A setting that quietly does nothing
+  # is worse than a missing one: somebody changes it, watches nothing happen, and stops
+  # trusting the rest. instead
 
 auto_classify:                 # evaluated in order, first match wins
   - code: power_failure

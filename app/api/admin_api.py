@@ -873,6 +873,19 @@ def set_shifts():
 
 # --------------------------------------------------------------------------- settings
 
+def _gap_after_first_ask(cfg) -> int | None:
+    """Minutes between the first reason question and whatever happens next — the number
+    the outgoing message quotes back to the supervisor."""
+    ladder = cfg.ladders.get("unknown") or []
+    for i, rung in enumerate(ladder):
+        if rung.get("action") == "ask_reason":
+            if i + 1 < len(ladder):
+                return int(ladder[i + 1].get("after_minutes", 0)) - int(rung.get("after_minutes", 0))
+            every = (ladder[-1] or {}).get("repeat_every_minutes")
+            return int(every) if every else None
+    return None
+
+
 @bp.get("/api/admin/settings")
 def get_settings():
     denied = _read_guard()
@@ -891,15 +904,12 @@ def get_settings():
             "threshold": int(rec.get("threshold", 3)),
             "jump_to_step": int(rec.get("rung", 0)) + 1,
         },
-        # Surfaced read-only because it is a promise the outgoing message makes, and it
-        # is written from a different file than the timer that keeps it. See the note.
-        "prompt_says_reply_within": int(cfg.reprompt_after_minutes),
-        "prompt_actually_sent_after": first_ask,
-        "warnings": ([] if first_ask is None or first_ask == int(cfg.reprompt_after_minutes)
-                     else ["The reason question tells the supervisor they have "
-                           f"{int(cfg.reprompt_after_minutes)} minutes, but the plan "
-                           f"actually asks at {first_ask} minutes. The message is "
-                           "promising something the timers do not do."]),
+        # Both derived from the ladder that actually runs, so the message and the timer
+        # cannot disagree. This used to compare a separate config key against the ladder
+        # and warn when they drifted; the key is gone and the drift is now unrepresentable.
+        "question_asked_after": first_ask,
+        "then_asked_again_after": _gap_after_first_ask(cfg),
+        "warnings": [],
     })
 
 
