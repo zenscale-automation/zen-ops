@@ -519,6 +519,18 @@ def set_reason_owner(code: str):
         return _err(409, "that reason does not open a ticket, so it has no owning team",
                     code=code)
 
+    # A team with an empty shift is legal only while nothing routes to it. Pointing a
+    # fault at one is what MAKES it routed, so the emptiness check belongs here too —
+    # otherwise a brand-new team silently becomes the owner of a fault nobody is on call
+    # for, which is the failure the roster block exists to prevent, entered by the back
+    # door.
+    empty = _empty_shifts(_roster_of(cfg, owner))
+    if empty:
+        return _err(409, "that team has nobody on duty for some shifts — staff it before "
+                         "routing faults to it",
+                    owner=owner, empty_shifts=empty,
+                    hint="set the roster for " + owner + " first")
+
     # codes is a LIST in reasons.yaml, so a merge patch cannot address one entry — the
     # whole list is rewritten with just this owner changed.
     new_codes = [dict(c, owner=owner) if c["code"] == code else c for c in cfg.codes]
