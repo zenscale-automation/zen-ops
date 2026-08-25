@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 
 from app import clock, db
 from app.core import events, incidents, ticker
@@ -53,19 +54,49 @@ def test_false_restart_within_grace_reopens(cfg):
     assert tkt["reopen_count"] == 1 and tkt["status"] != "closed"
 
 
+def _meta_envelope(frm, text, context_id=None):
+    """Exactly the shape Meta POSTs: entry -> changes -> value -> messages."""
+    msg = {"from": frm, "id": "wamid.TEST", "timestamp": "1754300000",
+           "type": "text", "text": {"body": text}}
+    if context_id:
+        msg["context"] = {"id": context_id}
+    return {"object": "whatsapp_business_account",
+            "entry": [{"id": "WABA", "changes": [{"field": "messages", "value": {
+                "messaging_product": "whatsapp",
+                "metadata": {"phone_number_id": "PNID"},
+                "contacts": [{"wa_id": frm, "profile": {"name": "Supervisor"}}],
+                "messages": [msg]}}]}]}
+
+
+def _meta_post(client, payload, secret=b"test-secret"):
+    body = json.dumps(payload).encode()
+    sig = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
+    return client.post("/webhook/whatsapp", data=body,
+                       headers={"Content-Type": "application/json",
+                                "X-Hub-Signature-256": sig})
+
+
 def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
-    monkeypatch.setenv("WHATSAPP_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "test-secret")
     app = create_app(start_workers=False, cfg=cfg)
     client = app.test_client()
 
     inc = incidents.open_incident(cfg, "loom_5", "STOPPED")
-    from app.core import classify
+    from app.core import classify, outbox, ticker
     classify.on_open(cfg, inc)
 
-    body = json.dumps({"from": "+919000000005", "text": "1", "asset_ref": "loom_5"}).encode()
-    sig = hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
-    resp = client.post("/webhook/whatsapp", data=body,
-                       headers={"Content-Type": "application/json", "X-Signature": sig})
+    # The real Meta payload carries no asset_ref — the old BSP placeholder invented one.
+    # So the prompt must actually have been SENT for the reply to have something to
+    # match against. Advance past prompt_after_minutes, fire the ladder, drain the
+    # outbox, and only then reply, exactly as it happens on the floor.
+    clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=16))
+    ticker.tick(cfg)
+    outbox.drain(cfg)
+    sent_to = db.query_one("SELECT recipient FROM outbox ORDER BY id DESC LIMIT 1")
+    assert sent_to["recipient"] == "+919000000005", "prompt went to the shift supervisor"
+
+    # Meta reports `from` without a '+'; routing.yaml stores it with one.
+    resp = _meta_post(client, _meta_envelope("919000000005", "1"))
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["matched"] is True and data["code"] == "weaving.electrical"
@@ -78,8 +109,34 @@ def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
 
 
 def test_webhook_bad_signature_rejected(cfg, monkeypatch):
-    monkeypatch.setenv("WHATSAPP_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "test-secret")
     app = create_app(start_workers=False, cfg=cfg)
     client = app.test_client()
-    resp = client.post("/webhook/whatsapp", json={"from": "x", "text": "1", "asset_ref": "loom_5"})
+    resp = _meta_post(client, _meta_envelope("919000000005", "1"), secret=b"wrong-secret")
     assert resp.status_code == 401
+
+
+def test_delivery_receipts_are_acknowledged_not_treated_as_replies(cfg, monkeypatch):
+    """Meta posts `statuses` for every sent/delivered/read event. A non-200 makes it
+    retry and eventually disable the subscription, so these must be accepted quietly."""
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "test-secret")
+    app = create_app(start_workers=False, cfg=cfg)
+    client = app.test_client()
+    status_only = {"object": "whatsapp_business_account", "entry": [{"id": "WABA",
+        "changes": [{"field": "messages", "value": {"messaging_product": "whatsapp",
+            "statuses": [{"id": "wamid.X", "status": "delivered",
+                          "recipient_id": "919000000005"}]}}]}]}
+    resp = _meta_post(client, status_only)
+    assert resp.status_code == 200 and resp.get_json()["ignored"] is True
+    assert db.query_one("SELECT COUNT(*) n FROM inbound_raw")["n"] == 0
+
+
+def test_subscription_handshake_echoes_the_challenge(cfg, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "tok-123")
+    client = create_app(start_workers=False, cfg=cfg).test_client()
+    ok = client.get("/webhook/whatsapp?hub.mode=subscribe"
+                    "&hub.verify_token=tok-123&hub.challenge=abc987")
+    assert ok.status_code == 200 and ok.get_data(as_text=True) == "abc987"
+    bad = client.get("/webhook/whatsapp?hub.mode=subscribe"
+                     "&hub.verify_token=wrong&hub.challenge=abc987")
+    assert bad.status_code == 403

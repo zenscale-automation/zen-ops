@@ -16,6 +16,7 @@ No ORM. The domain modules speak SQL.
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from contextlib import contextmanager
@@ -32,12 +33,24 @@ _write_lock = threading.Lock()  # serialise writers within this process (Rule 3 
 # Known table names, for the optional prefix rewrite. Word-boundary matching means
 # column names like `incident_id` / `matched_ticket_id` are never touched.
 _TABLES = [
-    "schema_migrations", "incident_reasons", "inbound_raw",
+    "schema_migrations", "incident_reasons", "inbound_raw", "config_overrides",
     "assets", "incidents", "tickets", "escalations", "outbox", "events",
 ]
 _TABLE_RE = {t: re.compile(r"\b" + t + r"\b") for t in _TABLES}
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+
+log = logging.getLogger("ops.db")
+
+# MySQL error codes meaning "this DDL is already in place". Re-running a migration that
+# hits one of these is a no-op, not a failure.
+_ALREADY_APPLIED = {
+    1050,  # table already exists
+    1060,  # duplicate column name
+    1061,  # duplicate key name
+    1091,  # can't DROP; check that column/key exists
+    1826,  # duplicate foreign key constraint name
+}
 
 
 def init(params: dict, table_prefix: str = "") -> None:
@@ -224,7 +237,22 @@ def migrate(migrations_dir: str | None = None) -> list[str]:
         statements = _split_statements(path.read_text(encoding="utf-8"))
         with c.cursor() as cur:
             for stmt in statements:
-                cur.execute(_prepare(stmt))
+                try:
+                    cur.execute(_prepare(stmt))
+                except pymysql.err.OperationalError as exc:
+                    # MySQL commits each DDL statement implicitly, so a migration can
+                    # never be atomic: a run that dies partway leaves some statements
+                    # applied and the bookkeeping row unwritten, and the next boot
+                    # replays the file. CREATE TABLE handles that itself via IF NOT
+                    # EXISTS, but MySQL 8 has no ADD COLUMN IF NOT EXISTS (MariaDB
+                    # does; we cannot rely on it). Treating "already applied" as
+                    # success keeps every statement type re-runnable, which is the
+                    # property the whole recovery story depends on.
+                    if exc.args and exc.args[0] in _ALREADY_APPLIED:
+                        log.info("migration %s: already applied — %s",
+                                 path.name, exc.args[1])
+                        continue
+                    raise
             cur.execute(
                 _prepare("INSERT INTO schema_migrations(name, applied_at) VALUES (?, ?)"),
                 (path.name, clock.now_iso()),

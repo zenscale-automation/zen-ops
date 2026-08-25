@@ -28,6 +28,17 @@ roles:
 # Shingora. `placeholder: true` is load-bearing: ops-core refuses to start in live mode
 # while any routed person still carries it, so these numbers can never be messaged by
 # accident. Delete the flag as each person is replaced with a real contact.
+# One named person who catches anything a role does not resolve to — a reason with no
+# owner, or a shift with nobody rostered. Without it those notifications have no
+# recipient at all, which is the "no owner" defect recreated inside the fix for it.
+#
+# route_all_to_default sends EVERY notification to that person regardless of role.
+# That is the right setting for the pilot: until the real per-role roster exists,
+# one accountable person is honest, and per-role routing that resolves to invented
+# names is not. Turn it off once the roster is in.
+default_owner: production_manager
+route_all_to_default: true
+
 people:
   ravi_k:       { name: Ravi Kumar,     whatsapp: "+919000000001", rfid: "04A2...", placeholder: true }
   sukhwinder_s: { name: Sukhwinder S,   whatsapp: "+919000000002", rfid: "04C1...", placeholder: true }

@@ -5,7 +5,7 @@ import copy
 
 import pytest
 
-from app import config
+from app import config, db
 
 
 def test_valid_config_loads():
@@ -104,9 +104,12 @@ def test_migrate_recovers_when_tables_exist_but_bookkeeping_is_missing(cfg):
     appdb.migrate()                                   # normal first run
     appdb.execute("DELETE FROM schema_migrations")    # simulate the interrupted run
 
+    from pathlib import Path
+    expected = len(list((Path(__file__).resolve().parent.parent / "migrations").glob("*.sql")))
+
     applied = appdb.migrate()                         # must not raise
     assert "001_init.sql" in applied
-    assert appdb.query_one("SELECT COUNT(*) n FROM schema_migrations")["n"] == 1
+    assert appdb.query_one("SELECT COUNT(*) n FROM schema_migrations")["n"] == expected
     assert appdb.migrate() == []                      # and is idempotent thereafter
 
 
@@ -117,8 +120,10 @@ def test_exported_schema_records_itself_so_a_hand_import_is_recognised(cfg):
     from pathlib import Path
     sql = (Path(__file__).resolve().parent.parent / "deploy" / "schema.mysql.sql").read_text()
     assert "schema_migrations" in sql, "export must create the bookkeeping table"
-    assert "INSERT IGNORE INTO" in sql and "001_init.sql" in sql, \
-        "export must record each migration it contains"
+    from pathlib import Path
+    for m in (Path(__file__).resolve().parent.parent / "migrations").glob("*.sql"):
+        assert m.name in sql, f"export must record {m.name}"
+    assert "INSERT IGNORE INTO" in sql, "export must record each migration it contains"
     assert "CREATE TABLE IF NOT EXISTS" in sql, "export must be re-runnable"
 
 
@@ -172,3 +177,111 @@ def test_catch_all_reason_comes_from_config_not_a_constant(cfg):
     cfg.reasons["codes"] = cfg.codes + [
         {"code": "dyeing.other", "label": {"en": "Other"}, "expected_minutes": 0}]
     assert prompts.options(cfg)[-1]["code"] == "dyeing.other"
+
+
+# --- runtime config API ---------------------------------------------------------
+
+def _client(cfg):
+    from app.main import create_app
+    return create_app(start_workers=False, cfg=cfg).test_client()
+
+
+def _hdr(key="test-admin-key"):
+    return {"X-Admin-Key": key, "X-Admin-User": "gurpreet"}
+
+
+def test_patch_changes_config_without_a_restart(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    before = cfg.version
+
+    r = client.patch("/api/config/escalation", headers=_hdr(),
+                     json={"ladders": {"default": [
+                         {"after_minutes": 0, "notify": "owner"},
+                         {"after_minutes": 5, "notify": "shift_incharge"}]}})
+    assert r.status_code == 200
+    assert cfg.version == before + 1
+    assert cfg.ladder_for(None)[1]["after_minutes"] == 5, "live config changed in place"
+
+    # and it survives a fresh load, because it is stored, not just in memory
+    from app import config as appconfig
+    assert appconfig.load().ladder_for(None)[1]["after_minutes"] == 5
+
+
+def test_an_invalid_patch_is_rejected_and_changes_nothing(cfg, monkeypatch):
+    """The boot-time fail-loud guarantee, moved to write time. This must never become
+    'accept it and route nothing to nobody at 3am'."""
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    before_version, before_ladders = cfg.version, dict(cfg.ladders)
+
+    r = client.patch("/api/config/reasons", headers=_hdr(),
+                     json={"codes": [{"code": "weaving.electrical", "ticketable": True,
+                                      "owner": "electricain",  # typo, no such role
+                                      "expected_minutes": 30}]})
+    assert r.status_code == 422
+    assert any("electricain" in p for p in r.get_json()["problems"])
+    assert cfg.version == before_version and cfg.ladders == before_ladders
+    assert db.query_one("SELECT COUNT(*) n FROM config_overrides")["n"] == 0
+
+
+def test_writes_require_the_admin_key(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    assert client.patch("/api/config/routing", json={"x": 1}).status_code == 403
+    assert client.patch("/api/config/routing", headers=_hdr("wrong"),
+                        json={"x": 1}).status_code == 403
+    assert client.get("/api/config").status_code == 200, "reads stay open behind nginx"
+
+
+def test_writes_are_disabled_when_no_admin_key_is_configured(cfg, monkeypatch):
+    """Absent credentials must fail closed, not open."""
+    monkeypatch.delenv("OPS_ADMIN_API_KEY", raising=False)
+    r = _client(cfg).patch("/api/config/routing", headers=_hdr(), json={"x": 1})
+    assert r.status_code == 403 and "disabled" in r.get_json()["error"]
+
+
+def test_source_scope_is_restart_only(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    r = _client(cfg).patch("/api/config/source", headers=_hdr(),
+                           json={"settings": {"poll_seconds": 5}})
+    assert r.status_code == 409 and "restart-only" in r.get_json()["error"]
+
+
+def test_every_change_is_audited(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    client.patch("/api/config/routing", headers=_hdr(),
+                 json={"default_owner": "amarjit_s"})
+    ev = db.query_one("SELECT actor, kind, detail FROM events WHERE entity='config'"
+                      " ORDER BY id DESC LIMIT 1")
+    assert ev["kind"] == "config_changed" and ev["actor"] == "gurpreet"
+
+
+def test_delete_reverts_to_the_yaml(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    original = cfg.reprompt_after_minutes
+    client.patch("/api/config/reasons", headers=_hdr(),
+                 json={"defaults": {"reprompt_after_minutes": 99}})
+    assert cfg.reprompt_after_minutes == 99
+    assert client.delete("/api/config/reasons", headers=_hdr()).status_code == 200
+    assert cfg.reprompt_after_minutes == original
+
+
+def test_merge_patch_null_deletes_and_lists_replace(cfg):
+    from app.config import merge_patch
+    assert merge_patch({"a": 1, "b": 2}, {"b": None}) == {"a": 1}
+    assert merge_patch({"a": {"x": 1, "y": 2}}, {"a": {"y": 3}}) == {"a": {"x": 1, "y": 3}}
+    assert merge_patch({"l": [1, 2, 3]}, {"l": [9]}) == {"l": [9]}, \
+        "a ladder is an ordered sequence — merging element-wise invents a rung order"
+
+
+def test_config_history_is_readable_from_the_audit_endpoint(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    client.patch("/api/config/reasons", headers=_hdr(),
+                 json={"defaults": {"prompt_after_minutes": 12}})
+    rows = client.get("/api/events/config/0").get_json()["events"]
+    assert rows and rows[-1]["kind"] == "config_changed"
+    assert rows[-1]["actor"] == "gurpreet"

@@ -149,7 +149,9 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     asset = c.execute("SELECT * FROM assets WHERE id=?", (incident["asset_id"],)).fetchone()
     asset_ref = asset["asset_ref"] if asset else incident["asset_id"]
 
-    recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now, owner_role=owner_role)
+    recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
+                                 owner_role=owner_role,
+                                 for_prompt=(esc_row["action"] == "ask_reason"))
     action = esc_row["action"]
 
     # Build the payload once; recipients differ only by address.

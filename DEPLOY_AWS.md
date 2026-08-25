@@ -123,7 +123,10 @@ tables in phpMyAdmin and letting boot recreate them is equally safe.
 
 ## 6. Shadow mode
 
-This deployment ships with `OPS_SHADOW_MODE=true`. The full pipeline runs — poll,
+This deployment ships with `OPS_SHADOW_MODE=true
+
+# Required for runtime config edits via /api/config. Unset = writes refused.
+OPS_ADMIN_API_KEY=`. The full pipeline runs — poll,
 classify, route, escalate, and write every event to MySQL — but no message goes out on
 any channel. Everything that *would* have been sent lands in `logs/notifications.log`,
 tagged with the channel it was destined for.
@@ -249,6 +252,149 @@ tailscale serve status   # prints the https://<machine>.<tailnet>.ts.net URL
 
 The bundled `deploy/nginx.conf` is for the on-prem/public-TLS variant and isn't
 needed in either option; skip it.
+
+## 10b. Going live on WhatsApp
+
+ops-core talks to Meta's WhatsApp Cloud API directly — no BSP. A BSP sells a shared
+inbox, agent routing and campaign tooling; ops-core has its own queue, dedupe keys,
+retry and escalation engine, so all of that would be paid for and bypassed.
+
+**Start business verification on day one — it takes days to weeks and everything else
+waits on it.** Meta cross-checks your Business Manager details against a public website,
+and a mismatch in legal name or address is the usual rejection.
+
+You also need a **dedicated phone number**. Once registered to the API it can never be
+used on the normal WhatsApp or WhatsApp Business app again, so it must be a spare SIM.
+
+### The template
+
+Business-initiated messages are template-only. ops-core uses **one** UTILITY template
+whose single variable carries the fully-rendered message. Submit exactly this:
+
+```
+Shingora ops-core
+
+{{1}}
+
+Reply to this message to respond.
+```
+
+The fixed lines above and below matter — Meta rejects templates that begin or end with a
+variable. And the one-variable design is deliberate: bake the numbered reason list into
+template text and every edit to `reasons.yaml` needs a fresh Meta approval, which
+quietly undoes the promise that a Shingora engineer can change a reason code and
+restart. One approval, forever; the list stays in YAML.
+
+### Credentials
+
+Fill the `WHATSAPP_*` block in `.env`. Two are easily confused:
+
+| Value | Where it comes from | What it does |
+|---|---|---|
+| `WHATSAPP_APP_SECRET` | App settings &rarr; Basic | Signs inbound webhooks (`X-Hub-Signature-256`) |
+| `WHATSAPP_VERIFY_TOKEN` | You invent it | Echoed once during the subscription handshake |
+
+Use a **system user token** for `WHATSAPP_ACCESS_TOKEN`, not the temporary one on the
+API-setup tab — that one expires in 24 hours and the fault will look like a delivery
+outage at 3am.
+
+### Public HTTPS is required
+
+Replies come in over a webhook, so ops-core needs a reachable HTTPS endpoint — the one
+thing the current localhost-only deployment does not have. Expose **only** the webhook
+path, never the dashboard:
+
+```bash
+sudo tailscale funnel --bg --set-path /webhook/whatsapp 8000
+```
+
+Then in the Meta app dashboard set the callback URL to that path and the verify token to
+`WHATSAPP_VERIFY_TOKEN`. Meta GETs once with `hub.challenge`; ops-core echoes it back.
+After that, POSTs are rejected unless the signature matches the app secret.
+
+### Cost, so nobody is surprised
+
+Utility templates in India run roughly &#8377;0.11&ndash;0.15 each, and messages sent
+inside an open 24-hour service window are free. A supervisor replying to the first
+prompt of a shift opens that window for everything else you send them that day &mdash;
+ops-core detects this automatically and switches to free-form text, which is both
+cheaper and exempt from template formatting. At 44 looms expect low hundreds of rupees a
+month.
+
+### Flip the switch
+
+Only after the roster is real: replace the people block in `routing.yaml`, drop the
+`placeholder` flags, then set `OPS_SHADOW_MODE=false` and restart. Boot will refuse
+while any placeholder remains.
+
+## 10c. Changing config at runtime
+
+The YAML files remain the base — git-tracked, commented, and what you read to understand
+the system. The API stores a patch on top and reloads the live config without a restart.
+
+Set `OPS_ADMIN_API_KEY` in `.env`. **If it is unset, config writes are refused entirely**
+— absent credentials fail closed, not open.
+
+```bash
+K='X-Admin-Key: <your key>'
+
+# read the effective config, and which scopes are overridden
+curl -s localhost:8000/api/config | python3 -m json.tool
+
+# change a ladder — RFC 7386 merge patch, so send only what changes
+curl -s -X PATCH localhost:8000/api/config/escalation -H "$K" \
+  -H 'X-Admin-User: gurpreet' -H 'Content-Type: application/json' \
+  -d '{"ladders":{"weaving.electrical":[{"after_minutes":0,"notify":"owner"},
+                                        {"after_minutes":8,"notify":"supervisor"}]}}'
+
+# revert a scope back to the YAML
+curl -s -X DELETE localhost:8000/api/config/reasons -H "$K"
+```
+
+Objects merge recursively and `null` deletes a key. **Lists replace wholesale** — an
+escalation ladder is an ordered sequence, and merging two ladders element-wise produces
+a rung order nobody asked for.
+
+Three guarantees, because config is the one thing that can silently disable everything:
+
+- **Validated before commit.** A patch is applied to a throwaway config and run through
+  the same checks the process uses at boot. Fail and you get `422` with the problem list
+  and nothing changes — the boot-time "fail loud" guarantee becomes "reject the write",
+  never "accept a config that routes nothing to nobody at 3am".
+- **Authenticated.** `X-Admin-Key` on every mutation. Reads stay open behind whatever
+  fronts the dashboard.
+- **Audited.** Every change lands in the event log with the patch and the actor. Read it
+  back with `GET /api/events/config/0` — who widened the ladder at 2am is exactly the
+  kind of question this system exists to answer.
+
+`source` is **restart-only** and returns `409`. Its settings are read once when the
+adapter is built, so changing them at runtime would appear to work and do nothing, and
+rebuilding the adapter mid-shift discards the API cursor and every asset's last-known
+state.
+
+## 10d. Who gets told
+
+`routing.yaml` now has two keys that decide this:
+
+```yaml
+default_owner: production_manager
+route_all_to_default: true
+```
+
+`default_owner` is the backstop: any role that resolves to nobody — a reason with no
+owner, a shift with nobody rostered — goes to that one person instead of nowhere.
+Without it those notifications have no recipient at all, which is the "no owner" defect
+recreated inside the fix for it.
+
+`route_all_to_default` sends **every** ticket and escalation to that person regardless
+of role. That is the right setting for the pilot: until the real per-role roster exists,
+one accountable person is honest and per-role routing to invented names is not. Turn it
+off with a single PATCH once the roster is in.
+
+**Reason prompts are deliberately exempt.** The "why is this asset stopped?" question
+always goes to whoever can actually see it, never to the default owner — asking a
+manager who cannot see the shed floor produces no useful answer and stalls the flow
+waiting for one.
 
 ## 11. Day-2
 
