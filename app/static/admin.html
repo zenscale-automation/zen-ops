@@ -199,14 +199,6 @@
       </section>
 
       <section>
-        <h2>Machines</h2>
-        <p class="cap">A machine that is deliberately not running &mdash; no order, no yarn,
-          planned maintenance &mdash; looks exactly like a broken one in the data. Say so
-          here and it stops being chased. Set it once and it covers the whole period.</p>
-        <div id="assets"></div>
-      </section>
-
-      <section>
         <h2>Who gets called</h2>
         <div id="teams"></div>
         <div class="row" style="margin-top:12px">
@@ -297,7 +289,7 @@ function el(t, c, txt) {
   return n;
 }
 var INFLIGHT = new Set();
-var STATE = null, ASSETS = null, SIM = null, LIVE = null, LAST = null;
+var STATE = null, SIM = null, LAST = null;
 var planDraft = null, planDirty = false, shiftDraft = null, settingsDraft = null;
 
 // Not persisted: it is a shared password for the whole plant's paging, and a shop-floor
@@ -409,19 +401,12 @@ function handle(r, okMsg) {
 async function load() {
   if (!keyOf()) return showLocked();
   $("#banners").innerHTML = "";
-  var results = await Promise.all([
-    api("GET", "/api/admin/overview"),
-    api("GET", "/api/admin/assets"),
-    api("GET", "/api/overview")
-  ]);
-  var ov = results[0], as = results[1], lv = results[2];
+  var ov = await api("GET", "/api/admin/overview");
   if (!ov.ok) {
     $("#app").style.display = "none";
     return showLocked(ov.status === 403 ? "That key was not accepted. " : null);
   }
   STATE = ov.payload;
-  ASSETS = as.ok ? as.payload : { assets: [], reasons: [] };
-  LIVE = lv.ok ? lv.payload : null;
   $("#locked").innerHTML = "";
   $("#app").style.display = "";
   await refreshSim();
@@ -450,7 +435,7 @@ async function refreshSim() {
 function render() {
   if (!STATE) return;
   renderHeader(); renderHeadline(); renderFacts(); renderNextSteps();
-  renderAssets(); renderTeams(); renderPeople();
+  renderTeams(); renderPeople();
   renderPlans(); renderReasons();
 }
 
@@ -506,29 +491,24 @@ function renderHeadline() {
 function renderFacts() {
   var box = $("#facts");
   box.innerHTML = "";
-  var assets = ASSETS.assets || [];
-  var watched = assets.filter(function (a) { return a.in_service; }).length;
-  var stopped = assets.filter(function (a) { return a.stopped_now; }).length;
-  var offplan = assets.filter(function (a) { return a.off_plan; }).length;
+  // Only what this page is the source of truth FOR. Machine state lives on the loom
+  // dashboard; repeating it here was a second copy that could disagree.
   var samples = STATE.people.filter(function (p) { return p.placeholder; }).length;
+  var teams = STATE.teams.length;
+  var people = STATE.people.length;
 
-  function fact(k, v, s, cls) {
+  function fact(k, v, s2, cls) {
     var d = el("div", "fact");
     d.append(el("div", "k", k));
     var val = el("div", "v", String(v));
     if (cls) val.style.color = "var(--" + cls + ")";
     d.append(val);
-    if (s) d.append(el("div", "s", s));
+    if (s2) d.append(el("div", "s", s2));
     box.append(d);
   }
 
-  fact("Machines watched", watched, watched ? "reporting in" : "none reporting");
-  fact("Stopped now", stopped, stopped ? "with an open fault" : "all running",
-       stopped ? "bad" : "good");
-  if (offplan) fact("Not in production", offplan, "deliberately idle", "warn");
-  if (LIVE) fact("Downtime, 24h",
-    Math.round(Number(LIVE.downtime_minutes_24h) || 0) + "m",
-    (LIVE.incidents_24h || 0) + " stops recorded");
+  fact("People", people, people === 1 ? "on the roster" : "in the directory");
+  fact("Teams", teams, "");
   if (samples) fact("Sample contacts", samples, "invented numbers", "warn");
 }
 
@@ -586,87 +566,6 @@ function renderNextSteps() {
   d.append(t);
   d.append(el("div", "cap", "Shift " + (SIM.shift || "?")));
   box.append(d);
-}
-
-/* ------------------------------------------------------------- 2. machines */
-
-function renderAssets() {
-  var box = $("#assets");
-  box.innerHTML = "";
-  var assets = ASSETS.assets || [];
-  if (!assets.length) {
-    box.append(el("div", "empty", "No machines are reporting yet."));
-    return;
-  }
-  var t = el("table"), thead = el("thead"), head = el("tr");
-  ["Machine", "State", "", ""].forEach(function (h) { head.append(el("th", null, h)); });
-  thead.append(head); t.append(thead);
-  var tb = el("tbody");
-
-  assets.forEach(function (a) {
-    var tr = el("tr");
-    tr.append(el("td", null, a.asset_ref.replace(/_/g, " ")));
-
-    var st = el("td");
-    if (!a.in_service) st.append(el("span", "tag quiet", "retired"));
-    else if (a.off_plan) st.append(el("span", "tag sample", "not in production"));
-    else if (a.stopped_now) st.append(el("span", "tag bad", "stopped"));
-    else st.append(el("span", "tag good", "running"));
-    tr.append(st);
-
-    var detail = el("td");
-    if (a.off_plan) {
-      detail.append(document.createTextNode(
-        a.off_plan.reason.replace(/_/g, " ") + " until "
-        + String(a.off_plan.until).slice(0, 16).replace("T", " ")));
-    }
-    tr.append(detail);
-
-    var act = el("td");
-    act.style.textAlign = "right";
-    if (a.in_service) {
-      if (a.off_plan) {
-        var back = el("button", "sm", "Back in production");
-        back.onclick = async function () {
-          handle(await api("DELETE", "/api/admin/assets/" + a.asset_ref + "/offplan"),
-            a.asset_ref.replace(/_/g, " ") + " is back in production");
-        };
-        act.append(back);
-      } else {
-        var off = el("button", "sm", "Not in production");
-        off.onclick = function () { offplanForm(act, a); };
-        act.append(off);
-      }
-    }
-    tr.append(act);
-    tb.append(tr);
-  });
-  t.append(tb);
-  box.append(t);
-}
-
-function offplanForm(cell, asset) {
-  cell.innerHTML = "";
-  var wrap = el("div", "row");
-  var why = el("select");
-  (ASSETS.reasons || ["no_order", "no_yarn", "maintenance", "other"])
-    .forEach(function (r) { why.append(new Option(r.replace(/_/g, " "), r)); });
-  var hours = el("select");
-  [[4, "for 4 hours"], [8, "for this shift"], [24, "for a day"],
-   [72, "for 3 days"], [168, "for a week"]]
-    .forEach(function (pair) { hours.append(new Option(pair[1], String(pair[0]))); });
-  hours.value = "8";
-  var go = el("button", "sm primary", "Save");
-  go.onclick = async function () {
-    var until = new Date(Date.now() + Number(hours.value) * 3600e3).toISOString();
-    handle(await api("PUT", "/api/admin/assets/" + asset.asset_ref + "/offplan",
-      { reason: why.value, until: until }),
-      asset.asset_ref.replace(/_/g, " ") + " marked not in production");
-  };
-  var no = el("button", "sm", "Cancel");
-  no.onclick = function () { renderAssets(); };
-  wrap.append(why, hours, go, no);
-  cell.append(wrap);
 }
 
 /* -------------------------------------------------------- 3. who is called */
