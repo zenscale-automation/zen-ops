@@ -178,6 +178,32 @@
       <div id="reasons"></div>
     </section>
 
+    <!-- ============================ shifts ============================= -->
+    <section class="card">
+      <h2>Shift times</h2>
+      <p class="cap">Decides who is on duty at 3am, and is also what the changeover rule
+        matches against — one source of truth for both. The three must run back to back
+        and cover a full 24 hours.</p>
+      <div class="row" id="shifts"></div>
+      <div class="row" style="margin-top:10px">
+        <span class="tag" id="tz">—</span>
+        <div style="flex:1"></div>
+        <button class="primary" id="saveShifts" disabled>Save shifts</button>
+      </div>
+    </section>
+
+    <!-- =========================== settings ============================ -->
+    <section class="card">
+      <h2>Timings</h2>
+      <p class="cap">How long a stop must last before it counts, and when a repeated
+        fault should skip ahead in the chain.</p>
+      <div id="settings"></div>
+      <div class="row" style="margin-top:10px">
+        <div style="flex:1"></div>
+        <button class="primary" id="saveSettings" disabled>Save timings</button>
+      </div>
+    </section>
+
     <!-- =========================== simulate ============================ -->
     <section class="card">
       <h2>Who gets called right now</h2>
@@ -339,6 +365,7 @@ async function load() {
 
   renderPilot();
   renderPlans(); renderTeams(); renderPeople(); renderReasons(); renderSimOptions();
+  loadShifts(); loadSettings();
 
   const unrouted = STATE.teams.filter(t => t.targeted && t.empty_shifts.length);
   if (unrouted.length) {
@@ -599,6 +626,77 @@ function renderReasons() {
     STATE.notes ? STATE.notes.prompt_list_locked : ""));
 }
 
+/* shifts ------------------------------------------------------------------ */
+
+let shiftDraft = null;
+
+async function loadShifts() {
+  const r = await api("GET", "/api/admin/shifts");
+  if (!r.ok) return;
+  shiftDraft = Object.assign({}, r.payload.shifts);
+  $("#tz").textContent = r.payload.timezone || "no timezone set";
+  const box = $("#shifts");
+  box.innerHTML = "";
+  ["A", "B", "C"].forEach(k => {
+    const l = el("label", "f", "Shift " + k);
+    const i = el("input");
+    i.value = shiftDraft[k] || "";
+    i.placeholder = "06:00-14:00";
+    i.style.width = "128px";
+    i.oninput = () => { shiftDraft[k] = i.value.trim(); $("#saveShifts").disabled = !keyOf(); };
+    l.append(i);
+    box.append(l);
+  });
+}
+
+/* settings ---------------------------------------------------------------- */
+
+let settingsDraft = null;
+
+async function loadSettings() {
+  const r = await api("GET", "/api/admin/settings");
+  if (!r.ok) return;
+  const d = r.payload;
+  settingsDraft = {
+    short_stop_seconds: d.short_stop_seconds,
+    recurrence: Object.assign({}, d.recurrence),
+  };
+  const box = $("#settings");
+  box.innerHTML = "";
+
+  const mk = (label, suffix, get, set, min) => {
+    const l = el("label", "f", label);
+    const i = el("input");
+    i.type = "number"; i.min = String(min == null ? 0 : min);
+    i.value = get(); i.style.width = "92px";
+    i.oninput = () => { set(Number(i.value)); $("#saveSettings").disabled = !keyOf(); };
+    const wrap = el("div", "row tight");
+    wrap.append(i, el("span", "abs", suffix));
+    l.append(wrap);
+    return l;
+  };
+
+  const row = el("div", "row");
+  row.append(mk("Ignore stops shorter than", "seconds",
+    () => settingsDraft.short_stop_seconds,
+    v => settingsDraft.short_stop_seconds = v));
+  row.append(mk("Repeat counts as", "faults",
+    () => settingsDraft.recurrence.threshold,
+    v => settingsDraft.recurrence.threshold = v, 2));
+  row.append(mk("within", "hours",
+    () => settingsDraft.recurrence.window_hours,
+    v => settingsDraft.recurrence.window_hours = v, 1));
+  row.append(mk("then jump to step", "",
+    () => settingsDraft.recurrence.jump_to_step,
+    v => settingsDraft.recurrence.jump_to_step = v, 1));
+  box.append(row);
+
+  // The prompt text and the timer that backs it come from different files. If they
+  // disagree the message is promising something the system will not do, and nobody
+  // reading either file alone would notice.
+  (d.warnings || []).forEach(w => box.append(el("div", "banner warn", w)));
+}
+
 /* simulate ---------------------------------------------------------------- */
 
 function renderSimOptions() {
@@ -672,6 +770,12 @@ $("#addPerson").onclick = async () => {
   if (handle(await api("POST", "/api/admin/people", { name, whatsapp }), "Person added")) {
     $("#newName").value = ""; $("#newPhone").value = "";
   }
+};
+$("#saveShifts").onclick = async () => {
+  handle(await api("PUT", "/api/admin/shifts", { shifts: shiftDraft }), "Shift times saved");
+};
+$("#saveSettings").onclick = async () => {
+  handle(await api("PUT", "/api/admin/settings", settingsDraft), "Timings saved");
 };
 $("#runSim").onclick = runSim;
 $("#clearLog").onclick = () => { $("#entries").innerHTML = '<div class="empty">No calls yet.</div>'; };

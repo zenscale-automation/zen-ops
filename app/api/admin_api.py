@@ -633,3 +633,200 @@ def simulate():
         "steps": out,
         "any_unrouted": any(s["unrouted"] for s in out),
     })
+
+
+# --------------------------------------------------------------------------- shifts
+
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _parse_span(span: str):
+    """"06:00-14:00" -> (360, 840) in minutes from midnight. Night shifts wrap."""
+    parts = (span or "").split("-")
+    if len(parts) != 2:
+        return None
+    out = []
+    for t in parts:
+        m = _TIME_RE.match(t.strip())
+        if not m:
+            return None
+        out.append(int(m.group(1)) * 60 + int(m.group(2)))
+    return tuple(out)
+
+
+@bp.get("/api/admin/shifts")
+def get_shifts():
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    shifts = cfg.shifts or {}
+    return jsonify({
+        "version": cfg.version,
+        "timezone": shifts.get("timezone"),
+        "shifts": {k: shifts.get(k) for k in SHIFT_KEYS},
+        "note": "Shift times decide who is on duty at 3am AND are what the changeover "
+                "auto-classify rule matches against. One source of truth for both, so a "
+                "change here moves both at once.",
+    })
+
+
+@bp.put("/api/admin/shifts")
+def set_shifts():
+    """The shift calendar. Rejected unless the three spans tile a full 24 hours with no
+    gap and no overlap.
+
+    A gap is an hour where clock.resolve_shift returns nothing, so role lookups fall
+    through to whichever shift is listed first and the wrong person is paged. An overlap
+    is the same fault wearing the opposite hat. Neither is caught by config.validate,
+    and neither is visible in the YAML — you have to add the numbers up.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    body = request.get_json(silent=True) or {}
+    spans = body.get("shifts") or {}
+
+    parsed = {}
+    for k in SHIFT_KEYS:
+        span = spans.get(k)
+        p = _parse_span(span)
+        if p is None:
+            return _err(400, f"shift {k} must look like \"06:00-14:00\"", got=span)
+        parsed[k] = p
+
+    total = 0
+    for start, end in parsed.values():
+        total += (end - start) % (24 * 60) or (24 * 60)
+    if total != 24 * 60:
+        return _err(422, "the three shifts must cover exactly 24 hours between them",
+                    covered_minutes=total,
+                    hint="gaps leave hours with nobody rostered; overlaps page two "
+                         "shifts for the same fault")
+
+    # Each shift must begin where the previous one ends, or the total can be right while
+    # the coverage is wrong — two overlapping shifts and a matching gap sum to 24h too.
+    order = sorted(SHIFT_KEYS, key=lambda k: parsed[k][0])
+    for i, k in enumerate(order):
+        nxt = order[(i + 1) % len(order)]
+        if parsed[k][1] % (24 * 60) != parsed[nxt][0] % (24 * 60):
+            return _err(422, "the shifts must run back to back with no gap or overlap",
+                        after=k, before=nxt,
+                        detail=f"{k} ends at {spans[k].split('-')[1]} but "
+                               f"{nxt} starts at {spans[nxt].split('-')[0]}")
+
+    patch = {"shifts": {k: spans[k] for k in SHIFT_KEYS}}
+    return _apply("routing", patch, _actor(), {"updated": "shifts", "shifts": patch["shifts"]})
+
+
+# --------------------------------------------------------------------------- settings
+
+@bp.get("/api/admin/settings")
+def get_settings():
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    rec = cfg.recurrence or {}
+    unknown = cfg.ladders.get("unknown") or []
+    first_ask = next((int(r.get("after_minutes", 0)) for r in unknown
+                      if r.get("action") == "ask_reason"), None)
+    return jsonify({
+        "version": cfg.version,
+        "short_stop_seconds": cfg.min_duration_seconds,
+        "recurrence": {
+            "window_hours": float(rec.get("window_hours", 8)),
+            "threshold": int(rec.get("threshold", 3)),
+            "jump_to_step": int(rec.get("rung", 0)) + 1,
+        },
+        # Surfaced read-only because it is a promise the outgoing message makes, and it
+        # is written from a different file than the timer that keeps it. See the note.
+        "prompt_says_reply_within": int(cfg.reprompt_after_minutes),
+        "prompt_actually_sent_after": first_ask,
+        "warnings": ([] if first_ask is None or first_ask == int(cfg.reprompt_after_minutes)
+                     else ["The reason question tells the supervisor they have "
+                           f"{int(cfg.reprompt_after_minutes)} minutes, but the plan "
+                           f"actually asks at {first_ask} minutes. The message is "
+                           "promising something the timers do not do."]),
+    })
+
+
+@bp.put("/api/admin/settings")
+def set_settings():
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+
+    reasons_patch, escalation_patch, summary = {}, {}, {}
+
+    if "short_stop_seconds" in body:
+        try:
+            secs = int(body["short_stop_seconds"])
+        except (TypeError, ValueError):
+            return _err(400, "short_stop_seconds must be a whole number of seconds")
+        if secs < 0:
+            return _err(400, "short_stop_seconds cannot be negative")
+        # Above the first ask, every stop is auto-filed as a short stop before anyone is
+        # ever asked about it — the prompt becomes unreachable and nothing is escalated.
+        unknown = cfg.ladders.get("unknown") or []
+        first_ask = next((int(r.get("after_minutes", 0)) for r in unknown
+                          if r.get("action") == "ask_reason"), None)
+        if first_ask is not None and secs >= first_ask * 60:
+            return _err(422, "that is longer than the wait before the reason question, "
+                             "so every stop would be filed as a short stop and nobody "
+                             "would ever be asked",
+                        short_stop_seconds=secs, question_asked_after_minutes=first_ask)
+        reasons_patch.setdefault("defaults", {})["min_duration_seconds"] = secs
+        summary["short_stop_seconds"] = secs
+
+    rec = body.get("recurrence")
+    if isinstance(rec, dict):
+        patch = {}
+        if "window_hours" in rec:
+            try:
+                patch["window_hours"] = float(rec["window_hours"])
+            except (TypeError, ValueError):
+                return _err(400, "recurrence.window_hours must be a number")
+            if patch["window_hours"] <= 0:
+                return _err(400, "recurrence.window_hours must be positive")
+        if "threshold" in rec:
+            try:
+                patch["threshold"] = int(rec["threshold"])
+            except (TypeError, ValueError):
+                return _err(400, "recurrence.threshold must be a whole number")
+            if patch["threshold"] < 2:
+                return _err(422, "a threshold below 2 means every single fault is "
+                                 "treated as a repeat, so the override never stops firing",
+                            threshold=patch["threshold"])
+        if "jump_to_step" in rec:
+            try:
+                step = int(rec["jump_to_step"])
+            except (TypeError, ValueError):
+                return _err(400, "recurrence.jump_to_step must be a whole number")
+            longest = max((len(v or []) for v in (cfg.ladders or {}).values()), default=1)
+            if step < 1 or step > longest:
+                return _err(422, "that step does not exist in any plan",
+                            jump_to_step=step, longest_plan_steps=longest)
+            patch["rung"] = step - 1        # steps are 1-based for the operator
+        if patch:
+            escalation_patch["recurrence"] = patch
+            summary["recurrence"] = patch
+
+    if not reasons_patch and not escalation_patch:
+        return _err(400, "nothing to change",
+                    editable=["short_stop_seconds", "recurrence.window_hours",
+                              "recurrence.threshold", "recurrence.jump_to_step"])
+
+    # Two scopes may both change. Apply reasons first: if escalation then fails
+    # validation the first is already committed, so keep each patch independently valid
+    # rather than pretending this is one transaction.
+    if reasons_patch:
+        r = _apply("reasons", reasons_patch, _actor(), {"updated": "settings", **summary})
+        if isinstance(r, tuple):
+            return r
+    if escalation_patch:
+        return _apply("escalation", escalation_patch, _actor(),
+                      {"updated": "settings", **summary})
+    return jsonify({"ok": True, "version": _cfg().version, "updated": "settings", **summary})
