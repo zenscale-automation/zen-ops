@@ -96,7 +96,12 @@ def main():
         print("mock loom API did not start"); _cleanup()
 
     print("· starting ops-core on :8000 (fast cadences)")
-    _spawn("app.main", {"OPS_POLL_SECONDS": "2", "OPS_TICKER_SECONDS": "2", "OPS_OUTBOX_SECONDS": "1"})
+    # LOOM_API_BASE_URL is the whole point of a demo: without it app.main reads
+    # source.yaml and polls the REAL shed API, so "run the local demo" quietly became
+    # "point a second poller at production". The mock is already running on :8081.
+    _spawn("app.main", {"OPS_POLL_SECONDS": "2", "OPS_TICKER_SECONDS": "2",
+                        "OPS_OUTBOX_SECONDS": "1",
+                        "LOOM_API_BASE_URL": "http://127.0.0.1:8081"})
     if not _wait(f"{APP}/health"):
         print("ops-core did not start"); _cleanup()
 

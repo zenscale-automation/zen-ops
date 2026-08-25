@@ -351,10 +351,10 @@ function logCall(c) {
 function asCurl(c) {
   if (!c) return "";
   const bits = ["curl -X " + c.method, "'" + location.origin + BASE + c.path + "'"];
-  if (c.method !== "GET") {
-    bits.push("-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'");
-    bits.push("-H 'X-Admin-User: <who>'");
-  }
+  // On every method, including GET: reads need the key too, and a snippet that 403s is
+  // the first thing anybody building against this API would paste.
+  bits.push("-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'");
+  if (c.method !== "GET") bits.push("-H 'X-Admin-User: <who>'");
   if (c.body !== undefined) {
     bits.push("-H 'Content-Type: application/json'");
     bits.push("-d '" + JSON.stringify(c.body) + "'");
