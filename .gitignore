@@ -12,11 +12,16 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
 
-# Runtime
+# Runtime data + logs
 logs/*.log
+logs/*.log.*
+data/*.db
+data/*.db-wal
+data/*.db-shm
 *.sqlite
-*.db
 
 # OS
 .DS_Store
