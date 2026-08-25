@@ -119,9 +119,12 @@ class WhatsAppNotifier:
             return "0"
 
     def _asset_label(self, payload: dict) -> str:
+        # cfg.asset_type is the department's own word — loom, vat, machine. Hardcoding
+        # one here would put weaving's vocabulary in the mouth of every other department.
+        generic = getattr(self.cfg, "asset_type", "asset") if self.cfg else "asset"
         return (payload.get("asset_label")
                 or (payload.get("asset_ref") or "").replace("_", " ").title()
-                or "A loom")
+                or f"A {generic}")
 
     def template_for(self, payload: dict) -> tuple[str, list]:
         """(template_id, positional variables) for this payload type.

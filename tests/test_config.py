@@ -231,7 +231,21 @@ def test_writes_require_the_admin_key(cfg, monkeypatch):
     assert client.patch("/api/config/routing", json={"x": 1}).status_code == 403
     assert client.patch("/api/config/routing", headers=_hdr("wrong"),
                         json={"x": 1}).status_code == 403
-    assert client.get("/api/config").status_code == 200, "reads stay open behind nginx"
+
+
+def test_reads_require_the_admin_key_too(cfg, monkeypatch):
+    """This used to assert reads stayed open, on the reasoning that nginx basic auth
+    sat in front. It does not: the box runs Caddy, and ops-core is now proxied at
+    /ops/api/* with no authentication of its own in the proxy layer.
+
+    The effective config contains routing.people verbatim — every name and mobile
+    number in the plant. An unauthenticated GET is a phone-book leak, and a read-only
+    leak is still a leak."""
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    client = _client(cfg)
+    assert client.get("/api/config").status_code == 403
+    assert client.get("/api/config/routing").status_code == 403
+    assert client.get("/api/config", headers=_hdr("test-admin-key")).status_code == 200
 
 
 def test_writes_are_disabled_when_no_admin_key_is_configured(cfg, monkeypatch):

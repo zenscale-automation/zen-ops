@@ -468,7 +468,8 @@ def _plans_payload(cfg) -> list:
             "id": BUILTIN_PLANS.get(name, name),
             "key": name,
             "builtin": name in BUILTIN_PLANS,
-            "applies_to": ("any stopped loom with no reason given yet" if name == "unknown"
+            "applies_to": (f"any stopped {cfg.asset_type} with no reason given yet"
+                           if name == "unknown"
                            else "any fault without its own plan" if name == "default"
                            else cfg.label(name)),
             "steps": steps,
@@ -526,7 +527,8 @@ def set_plan(plan_id: str):
     # A plan that keeps the name but loses the action stops asking, silently.
     if key == "unknown" and not any(r.get("action") == "ask_reason" for r in rungs):
         return _err(422, "the 'no reason yet' plan must keep at least one step that asks "
-                         "for the reason — without it a stopped loom is never queried",
+                         f"for the reason — without it a stopped {cfg.asset_type} is "
+                         "never queried",
                     hint='add "action": "ask_reason" to a step')
 
     return _apply("escalation", {"ladders": {key: rungs}}, _actor(),
