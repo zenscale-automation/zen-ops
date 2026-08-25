@@ -5,140 +5,168 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ops-core admin</title>
 <style>
-  /* Same tokens as dashboard.html so the two pages read as one product. */
+  /*
+    Ordered by what is TRUE right now, not by what the config can express.
+
+    The previous version opened with plan editing, then a roster of ten people and
+    thirteen fault types — of which nine people were invented samples and nine fault
+    types opened no ticket and had nothing to set. "Who actually gets called" was a
+    button at the very bottom, and the one person who receives every page appeared
+    nowhere but a banner. So the page spent its whole surface on things that did not
+    currently do anything.
+  */
   :root {
-    --page:#f9f9f7; --surface:#fcfcfb; --text:#0b0b0b; --text-2:#52514e; --muted:#898781;
-    --grid:#e1e0d9; --border:rgba(11,11,11,0.10); --raised:#f2f1ec;
-    --series:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
-    /* Semantic pair with real contrast — the raw --warning is a 1.8:1 fill colour and
-       was being used for text that decides whether the plant goes live. */
-    --warn-ink:#7a4a00; --warn-bg:#fdf1d6;
+    --page:#f9f9f7; --surface:#fcfcfb; --sunk:#f2f1ec;
+    --text:#0b0b0b; --text-2:#52514e; --muted:#8a8880;
+    --grid:#e4e3dc; --border:rgba(11,11,11,0.11);
+    --accent:#2a78d6;
+    --good:#137a13; --good-bg:#e7f3e7;
+    --warn:#8a5a00; --warn-bg:#fbf0d8;
+    --bad:#b03030;  --bad-bg:#fbeaea;
     color-scheme:light;
   }
   @media (prefers-color-scheme:dark){ :root:where(:not([data-theme="light"])){
-    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
-    --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
-    --series:#3987e5; --good:#3ec13e; --warning:#f0b542; --critical:#f06a6a;
-    --warn-ink:#f0c987; --warn-bg:#3a2d10; color-scheme:dark; } }
+    --page:#0d0d0d; --surface:#1a1a19; --sunk:#232322;
+    --text:#f5f5f3; --text-2:#c3c2b7; --muted:#8f8d85;
+    --grid:#2e2e2b; --border:rgba(255,255,255,0.13);
+    --accent:#5b9ff0;
+    --good:#5cc45c; --good-bg:#162916;
+    --warn:#e8b45c; --warn-bg:#2e2513;
+    --bad:#f08080;  --bad-bg:#2e1717;
+    color-scheme:dark; } }
   :root[data-theme="dark"]{
-    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
-    --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
-    --series:#3987e5; --good:#3ec13e; --warning:#f0b542; --critical:#f06a6a;
-    --warn-ink:#f0c987; --warn-bg:#3a2d10; color-scheme:dark; }
+    --page:#0d0d0d; --surface:#1a1a19; --sunk:#232322;
+    --text:#f5f5f3; --text-2:#c3c2b7; --muted:#8f8d85;
+    --grid:#2e2e2b; --border:rgba(255,255,255,0.13);
+    --accent:#5b9ff0;
+    --good:#5cc45c; --good-bg:#162916;
+    --warn:#e8b45c; --warn-bg:#2e2513;
+    --bad:#f08080;  --bad-bg:#2e1717;
+    color-scheme:dark; }
 
   *{box-sizing:border-box}
   body{margin:0;background:var(--page);color:var(--text);
-    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.45}
-  code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14.5px;line-height:1.5}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 
-  header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);
-    background:var(--surface);position:sticky;top:0;z-index:20;flex-wrap:wrap}
-  header h1{font-size:16px;margin:0;font-weight:700}
-  header .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  header{display:flex;align-items:center;gap:12px;padding:12px 20px;
+    border-bottom:1px solid var(--border);background:var(--surface);
+    position:sticky;top:0;z-index:30;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:.1px}
   header .spacer{flex:1}
-  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);
-    border:1px solid var(--border);border-radius:999px;padding:5px 11px;background:var(--page)}
-  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
-  .dot.ok{background:var(--good)} .dot.bad{background:var(--critical)} .dot.warn{background:var(--warning)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);
+    border:1px solid var(--border);border-radius:999px;padding:4px 10px;background:var(--page)}
+  .pill.warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn)}
+  .pill.good{color:var(--good);background:var(--good-bg);border-color:var(--good)}
 
-  /* The API log is the deliverable for whoever rebuilds this UI, but it is reference
-     material, not something the operator reads. It gets a drawer, not a third of the
-     screen — the roster grid needs the width more. */
-  main{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;padding:18px 22px;
-    max-width:1080px;margin:0 auto;align-items:start;transition:max-width .15s}
-  body.log-open main{grid-template-columns:minmax(0,1fr) 400px;max-width:1560px}
+  main{max-width:1000px;margin:0 auto;padding:20px}
+  body.log-open main{max-width:100%;display:grid;
+    grid-template-columns:minmax(0,1fr) 400px;gap:18px;align-items:start}
   @media (max-width:1180px){body.log-open main{grid-template-columns:minmax(0,1fr)}}
-  .log{display:none}
-  body.log-open .log{display:block}
+  .log{display:none} body.log-open .log{display:block;position:sticky;top:70px}
 
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
-    padding:16px 18px;margin-bottom:16px}
-  .card h2{font-size:13px;margin:0 0 2px;font-weight:650}
-  .card .cap{font-size:12px;color:var(--muted);margin-bottom:14px}
+  section{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:18px 20px;margin-bottom:16px}
+  section > h2{font-size:12px;margin:0 0 3px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.7px;color:var(--muted)}
+  .cap{font-size:13px;color:var(--muted);margin:0 0 14px;max-width:70ch}
+  .cap:last-child{margin-bottom:0}
+
+  .headline{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;
+    padding:16px 18px;border-radius:10px;background:var(--sunk);
+    border:1px solid var(--grid);margin-bottom:14px}
+  .headline .who{flex:1;min-width:230px}
+  .headline .lead{font-size:19px;font-weight:650;letter-spacing:-.2px;line-height:1.25}
+  .headline .num{font-size:14px;color:var(--text-2);margin-top:4px}
+
+  .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+    gap:1px;background:var(--grid);border:1px solid var(--grid);border-radius:10px;
+    overflow:hidden;margin-bottom:14px}
+  .fact{background:var(--surface);padding:12px 14px}
+  .fact .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .fact .v{font-size:22px;font-weight:650;margin-top:3px;letter-spacing:-.4px;
+    font-variant-numeric:tabular-nums}
+  .fact .s{font-size:12px;color:var(--muted);margin-top:1px}
 
   table{width:100%;border-collapse:collapse}
-  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--grid);font-size:13px;vertical-align:middle}
-  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--grid);
+    font-size:13.5px;vertical-align:middle}
+  th{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700}
   tr:last-child td{border-bottom:none}
-  .empty{color:var(--muted);font-size:13px;padding:12px 4px}
+  .empty{color:var(--muted);font-size:13px;padding:14px 2px}
 
-  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
-    border:1px solid var(--border);color:var(--text-2)}
-  .tag.warn{color:var(--warning);border-color:var(--warning)}
-  .tag.bad{color:var(--critical);border-color:var(--critical)}
-  .tag.ok{color:var(--good);border-color:var(--good)}
+  .tag{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;
+    border-radius:5px;text-transform:uppercase;letter-spacing:.4px}
+  .tag.sample{color:var(--warn);background:var(--warn-bg)}
+  .tag.bad{color:var(--bad);background:var(--bad-bg)}
+  .tag.good{color:var(--good);background:var(--good-bg)}
+  .tag.quiet{color:var(--muted);background:var(--sunk)}
 
-  input,select,button{font:inherit;font-size:13px}
+  input,select,button{font:inherit;font-size:13.5px}
   input,select{background:var(--page);color:var(--text);border:1px solid var(--border);
-    border-radius:7px;padding:6px 9px;min-width:0}
-  input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--series);outline-offset:1px}
-  button{background:var(--raised);color:var(--text);border:1px solid var(--border);
-    border-radius:7px;padding:6px 12px;cursor:pointer}
-  button:hover:not(:disabled){border-color:var(--series)}
+    border-radius:7px;padding:7px 9px;min-width:0}
+  input:focus-visible,select:focus-visible,button:focus-visible,
+  summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button{background:var(--sunk);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:7px 13px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
   button:disabled{opacity:.45;cursor:not-allowed}
-  button.primary{background:var(--series);border-color:var(--series);color:#fff}
-  button.danger{color:var(--critical)}
-  button.sm{padding:3px 8px;font-size:12px}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .row.tight{gap:6px}
-  label.f{display:flex;flex-direction:column;gap:4px;font-size:11px;
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.danger{color:var(--bad)}
+  button.sm{padding:4px 9px;font-size:12.5px}
+  .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  label.f{display:flex;flex-direction:column;gap:5px;font-size:10.5px;font-weight:700;
     text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
 
-  /* roster grid */
-  .team{border:1px solid var(--grid);border-radius:10px;margin-bottom:12px;overflow:hidden}
-  .team-head{display:flex;align-items:flex-start;gap:12px;padding:11px 14px;
+  details.more{margin-top:12px;border-top:1px solid var(--grid);padding-top:10px}
+  details.more > summary{cursor:pointer;font-size:12.5px;color:var(--text-2);list-style:none}
+  details.more > summary::-webkit-details-marker{display:none}
+  details.more > summary::before{content:"\25B8  ";color:var(--muted)}
+  details.more[open] > summary::before{content:"\25BE  "}
+
+  .team{border:1px solid var(--grid);border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .team-head{display:flex;align-items:center;gap:10px;padding:10px 13px;
     background:var(--page);border-bottom:1px solid var(--grid)}
-  .team-head > div:first-child{flex:1}
-  .team-head .cap{margin:2px 0 0}
+  .team-head .nm{font-weight:650;flex:1}
   .shifts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--grid)}
   .shifts.one{grid-template-columns:1fr}
-  @media (max-width:760px){.shifts{grid-template-columns:1fr}}
-  .shift{background:var(--surface);padding:11px 13px;min-height:96px;
-    display:flex;flex-direction:column;gap:9px}
-  .shift-h{display:flex;justify-content:space-between;align-items:baseline;
-    font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
-    font-weight:600}
-  .chips{display:flex;flex-wrap:wrap;gap:6px;flex:1;align-content:flex-start}
-  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;
-    background:var(--raised);border:1px solid var(--border);border-radius:999px;
-    padding:3px 5px 3px 11px}
-  /* This flag is what stops the system going live against invented numbers, so it has
-     to be legible rather than decorative. */
-  .chip .ph{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
-    color:var(--warn-ink);background:var(--warn-bg);border-radius:4px;padding:1px 5px}
-  .chip .x{border:none;background:none;color:var(--muted);cursor:pointer;
-    font-size:15px;line-height:1;padding:0 4px;border-radius:50%}
-  .chip .x:hover{color:var(--critical);background:var(--page)}
-  .add select{font-size:12px;padding:4px 7px;width:100%}
-  .add .newp{margin-top:7px}
+  @media (max-width:720px){.shifts{grid-template-columns:1fr}}
+  .shift{background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .shift-h{display:flex;justify-content:space-between;gap:6px;align-items:baseline;
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;min-height:26px;align-content:flex-start}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:13px;background:var(--sunk);
+    border:1px solid var(--border);border-radius:999px;padding:3px 4px 3px 11px}
+  .chip .x{border:none;background:none;color:var(--muted);cursor:pointer;font-size:16px;
+    line-height:1;width:24px;height:24px;border-radius:50%;padding:0}
+  .chip .x:hover{color:var(--bad);background:var(--page)}
 
-  /* plan editor */
-  .step{display:grid;grid-template-columns:26px 1fr 120px auto;gap:9px;align-items:center;
-    padding:8px;border:1px solid var(--grid);border-radius:9px;margin-bottom:7px;background:var(--page)}
-  .step .n{width:22px;height:22px;border-radius:50%;background:var(--raised);color:var(--text-2);
-    display:grid;place-items:center;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}
-  .step .abs{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .step{display:grid;grid-template-columns:26px 1fr 150px auto;gap:10px;align-items:center;
+    padding:9px 10px;border:1px solid var(--grid);border-radius:9px;margin-bottom:7px;
+    background:var(--page)}
+  @media (max-width:700px){.step{grid-template-columns:26px 1fr;row-gap:8px}}
+  .step .n{width:22px;height:22px;border-radius:50%;background:var(--sunk);color:var(--text-2);
+    display:grid;place-items:center;font-size:11px;font-weight:700}
+  .abs{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 
-  /* request log — the actual deliverable for Zenscale */
-  .log{position:sticky;top:74px}
-  .log .entries{max-height:calc(100vh - 200px);overflow-y:auto;display:flex;flex-direction:column;gap:8px}
-  .entry{border:1px solid var(--grid);border-radius:9px;overflow:hidden;background:var(--page)}
-  .entry summary{cursor:pointer;padding:7px 10px;font-size:12px;display:flex;gap:8px;align-items:center;
-    list-style:none}
-  .entry summary::-webkit-details-marker{display:none}
-  .entry .m{font-weight:700;font-size:10.5px;letter-spacing:.5px;padding:1px 6px;border-radius:4px;
-    background:var(--raised);color:var(--text-2)}
-  .entry .m.POST,.entry .m.PUT,.entry .m.PATCH{color:var(--series)}
-  .entry .m.DELETE{color:var(--critical)}
-  .entry .st{margin-left:auto;font-variant-numeric:tabular-nums;font-size:11px}
-  .entry .st.ok{color:var(--good)} .entry .st.bad{color:var(--critical)}
-  .entry pre{margin:0;padding:9px 10px;background:var(--surface);border-top:1px solid var(--grid);
-    font-size:11.5px;line-height:1.5;overflow-x:auto;white-space:pre;color:var(--text-2)}
-  .banner{padding:9px 12px;border-radius:9px;font-size:12.5px;margin-bottom:12px;
+  .banner{padding:11px 14px;border-radius:9px;font-size:13.5px;margin-bottom:11px;
     border:1px solid var(--border);background:var(--page)}
-  .banner.bad{border-color:var(--critical);color:var(--critical)}
-  .banner.warn{border-color:var(--warning)}
-  .hidden{display:none}
+  .banner.bad{border-color:var(--bad);background:var(--bad-bg);color:var(--bad)}
+  .banner.warn{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+  .banner.good{border-color:var(--good);background:var(--good-bg);color:var(--good)}
+
+  .entries{max-height:calc(100vh - 190px);overflow-y:auto;display:flex;
+    flex-direction:column;gap:7px}
+  .entry{border:1px solid var(--grid);border-radius:8px;overflow:hidden;background:var(--page)}
+  .entry summary{cursor:pointer;padding:6px 9px;font-size:12px;display:flex;gap:7px;
+    align-items:center;list-style:none}
+  .entry summary::-webkit-details-marker{display:none}
+  .entry .m{font-weight:700;font-size:10px;letter-spacing:.4px;padding:1px 5px;
+    border-radius:4px;background:var(--sunk);color:var(--text-2)}
+  .entry .st{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums}
+  .entry pre{margin:0;padding:8px 9px;background:var(--surface);border-top:1px solid var(--grid);
+    font-size:11.5px;line-height:1.5;overflow-x:auto;white-space:pre;color:var(--text-2)}
+
   body.busy{cursor:progress}
   body.busy button,body.busy select,body.busy input{opacity:.6}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -147,132 +175,111 @@
 <body>
 
 <header>
-  <div>
-    <h1>ops-core admin</h1>
-    <div class="sub" id="sub">loading…</div>
-  </div>
+  <h1>ops-core</h1>
+  <span class="pill" id="deptPill">&mdash;</span>
+  <span class="pill" id="sendPill">&mdash;</span>
   <div class="spacer"></div>
-  <span class="pill" id="shadowPill"><span class="dot" id="shadowDot"></span><span id="shadowTxt">—</span></span>
-  <span class="pill" title="config version · page build">v<span id="version">—</span>
-    <span style="opacity:.55">·</span><span id="build" style="opacity:.55">—</span></span>
-  <label class="row tight" style="font-size:12px;color:var(--text-2)">
-    admin key
-    <input id="key" type="password" placeholder="X-Admin-Key" style="width:170px" autocomplete="off">
-  </label>
+  <span class="pill mono" id="buildPill" title="config version and page build">&mdash;</span>
+  <input id="key" type="password" placeholder="admin key" style="width:150px" autocomplete="off">
   <button id="toggleLog">API log</button>
-  <button id="reload">Reload</button>
+  <button id="reload">Refresh</button>
 </header>
 
 <main>
   <div>
-    <div id="pilot"></div>
     <div id="banners"></div>
+    <div id="locked"></div>
+    <div id="app" style="display:none">
 
-    <!-- ============================= plans ============================= -->
-    <section class="card">
-      <h2>Who to call, and when</h2>
-      <p class="cap">Each step waits the given number of minutes after the one before it.
-        The absolute time since the loom stopped is shown alongside, because that is what
-        the system actually schedules on.</p>
-      <div class="row" style="margin-bottom:12px">
-        <label class="f">Plan
-          <select id="planSel"></select>
-        </label>
-        <div style="align-self:end;color:var(--muted);font-size:12px" id="planApplies"></div>
-      </div>
-      <div id="steps"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="sm" id="addStep">+ Add step</button>
-        <div class="spacer" style="flex:1"></div>
-        <button class="primary" id="savePlan" disabled>Save plan</button>
-      </div>
-    </section>
+      <section>
+        <h2>Right now</h2>
+        <div class="headline" id="headline"></div>
+        <div class="facts" id="facts"></div>
+        <div id="nextSteps"></div>
+      </section>
 
-    <!-- ============================= teams ============================= -->
-    <section class="card">
-      <h2>Who is on duty</h2>
-      <p class="cap">Every shift a team gets called on needs somebody on it. One person
-        can cover two teams; nobody covering one is refused.</p>
-      <div id="teams"></div>
-      <div class="row" style="margin-top:12px">
-        <input id="newTeam" placeholder="New team name, e.g. Engineering" style="flex:1">
-        <button id="addTeam">Add team</button>
-      </div>
-    </section>
+      <section>
+        <h2>Machines</h2>
+        <p class="cap">A machine that is deliberately not running &mdash; no order, no yarn,
+          planned maintenance &mdash; looks exactly like a broken one in the data. Say so
+          here and it stops being chased. Set it once and it covers the whole period.</p>
+        <div id="assets"></div>
+      </section>
 
-    <!-- ============================= people ============================ -->
-    <section class="card">
-      <h2>People</h2>
-      <p class="cap">Whoever is reachable on WhatsApp. A placeholder is an invented number
-        from the sample roster — ops-core refuses to run live while any remain.</p>
-      <div id="people"></div>
-      <div class="row" style="margin-top:12px">
-        <input id="newName" placeholder="Name" style="flex:1">
-        <input id="newPhone" placeholder="+91…" style="width:170px">
-        <button id="addPerson">Add person</button>
-      </div>
-    </section>
+      <section>
+        <h2>Who gets called</h2>
+        <div id="routingMode"></div>
+        <div id="teams"></div>
+        <div class="row" style="margin-top:12px">
+          <input id="newTeam" placeholder="New team, for example Engineering" style="flex:1">
+          <button id="addTeam">Add team</button>
+        </div>
+        <details class="more">
+          <summary>Everyone in the directory</summary>
+          <div id="people" style="margin-top:10px"></div>
+        </details>
+      </section>
 
-    <!-- ============================ reasons ============================ -->
-    <section class="card">
-      <h2>Fault types</h2>
-      <p class="cap">Which team owns each fault. The wording and which options appear in the
-        WhatsApp question are fixed by the approved message template and cannot be changed here.</p>
-      <div id="reasons"></div>
-    </section>
+      <section>
+        <h2>When they get called</h2>
+        <p class="cap">Each step waits that many minutes after the one before it. A machine
+          starting again ends the chain immediately &mdash; that is the only signal the
+          system trusts.</p>
+        <div class="row" style="margin-bottom:12px">
+          <label class="f" style="flex:1;max-width:460px">Situation
+            <select id="planSel"></select>
+          </label>
+        </div>
+        <div id="steps"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="sm" id="addStep">Add a step</button>
+          <div style="flex:1"></div>
+          <button class="primary" id="savePlan" disabled>Save</button>
+        </div>
+      </section>
 
-    <!-- ============================ shifts ============================= -->
-    <section class="card">
-      <h2>Shift times</h2>
-      <p class="cap">Decides who is on duty at 3am, and is also what the changeover rule
-        matches against — one source of truth for both. The three must run back to back
-        and cover a full 24 hours.</p>
-      <div class="row" id="shifts"></div>
-      <div class="row" style="margin-top:10px">
-        <span class="tag" id="tz">—</span>
-        <div style="flex:1"></div>
-        <button class="primary" id="saveShifts" disabled>Save shifts</button>
-      </div>
-    </section>
+      <section>
+        <h2>Fault types</h2>
+        <p class="cap">Which team handles each fault. The wording, and which options appear
+          in the WhatsApp question, are fixed by the approved message template and cannot be
+          changed here.</p>
+        <div id="reasons"></div>
+        <details class="more">
+          <summary>Fault types that are recorded but never assigned to anybody</summary>
+          <div id="reasonsInert" style="margin-top:10px"></div>
+        </details>
+      </section>
 
-    <!-- =========================== settings ============================ -->
-    <section class="card">
-      <h2>Timings</h2>
-      <p class="cap">How long a stop must last before it counts, and when a repeated
-        fault should skip ahead in the chain.</p>
-      <div id="settings"></div>
-      <div class="row" style="margin-top:10px">
-        <div style="flex:1"></div>
-        <button class="primary" id="saveSettings" disabled>Save timings</button>
-      </div>
-    </section>
+      <section>
+        <h2>Shift times and thresholds</h2>
+        <p class="cap">Shift times decide who is on duty at 3am, and are also what the
+          changeover rule matches against. The three must run back to back across 24 hours.</p>
+        <div class="row" id="shifts"></div>
+        <div class="row" style="margin-top:10px">
+          <span class="tag quiet" id="tz">&mdash;</span>
+          <div style="flex:1"></div>
+          <button class="primary" id="saveShifts" disabled>Save shift times</button>
+        </div>
+        <div style="margin-top:20px" id="settings"></div>
+        <div class="row" style="margin-top:10px">
+          <div style="flex:1"></div>
+          <button class="primary" id="saveSettings" disabled>Save thresholds</button>
+        </div>
+      </section>
 
-    <!-- =========================== simulate ============================ -->
-    <section class="card">
-      <h2>Who gets called right now</h2>
-      <p class="cap">Resolved through the live shift calendar — the fastest way to check a
-        roster change before anyone's phone rings.</p>
-      <div class="row" style="margin-bottom:12px">
-        <label class="f">If this happened
-          <select id="simSel"></select>
-        </label>
-        <button style="align-self:end" id="runSim">Check</button>
-      </div>
-      <div id="sim"></div>
-    </section>
+    </div>
   </div>
 
-  <!-- ============================ api log ============================== -->
   <aside class="log">
-    <section class="card">
+    <section>
       <h2>API calls</h2>
-      <p class="cap">Every request this page makes. This panel is the reference —
-        anything here can be rebuilt in Zenscale from the method, path and body alone.</p>
+      <p class="cap">Every request this page makes. This is the reference for rebuilding it
+        elsewhere &mdash; method, path and body are all you need.</p>
       <div class="row" style="margin-bottom:10px">
         <button class="sm" id="clearLog">Clear</button>
         <button class="sm" id="copyCurl">Copy last as curl</button>
       </div>
-      <div class="entries" id="entries"><div class="empty">No calls yet.</div></div>
+      <div class="entries" id="entries"><div class="empty">Nothing yet.</div></div>
     </section>
   </aside>
 </main>
@@ -280,69 +287,60 @@
 <script>
 "use strict";
 
-// Caddy serves this under /ops, so root-absolute paths 404 behind the proxy while
-// working perfectly on localhost — the classic "works on my machine" deployment break.
-const BASE = location.pathname.replace(/\/admin\/?$/, "");
-const $ = s => document.querySelector(s);
-const el = (t, c, txt) => { const n = document.createElement(t);
-  if (c) n.className = c; if (txt != null) n.textContent = txt; return n; };
+// Caddy serves this under /ops, so root-absolute paths work on localhost and 404 behind
+// the proxy — a break that only ever shows up in deployment.
+var BASE = location.pathname.replace(/\/admin\/?$/, "");
+function $(s) { return document.querySelector(s); }
+function el(t, c, txt) {
+  var n = document.createElement(t);
+  if (c) n.className = c;
+  if (txt != null) n.textContent = txt;
+  return n;
+}
+var INFLIGHT = new Set();
+var STATE = null, ASSETS = null, SIM = null, LIVE = null, LAST = null;
+var planDraft = null, planDirty = false, shiftDraft = null, settingsDraft = null;
 
-const INFLIGHT = new Set();
-let STATE = null;      // last /api/admin/overview payload
-let LAST = null;       // last request, for copy-as-curl
+// Not persisted: it is a shared password for the whole plant's paging, and a shop-floor
+// browser is the wrong place to leave one lying.
+function keyOf() { return $("#key").value.trim(); }
 
-// The admin key lives only in this tab. It is deliberately not persisted: it is a
-// shared password for the whole plant's paging, and a key sitting in localStorage on a
-// shared shop-floor browser is a worse failure than retyping it.
-const keyOf = () => $("#key").value.trim();
-
-/* ---------------------------------------------------------------- api + logging */
+/* ------------------------------------------------------------- api and log */
 
 async function api(method, path, body) {
-  const headers = {};
+  var headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  // The key goes on reads as well as writes. /api/admin/overview returns every
-  // person's mobile number, so a read without a key is a phone-book leak, not a
-  // convenience.
-  if (keyOf()) {
-    headers["X-Admin-Key"] = keyOf();
-    headers["X-Admin-User"] = "admin-demo";
-  }
-  // Two clicks on a chip's × produced two DELETEs, the second 404ing about an action
-  // that had just succeeded; two rapid adds raced the read-modify-write on the server.
-  if (INFLIGHT.has(method + path)) return { ok: false, status: 0, payload: {} };
-  INFLIGHT.add(method + path);
+  if (keyOf()) { headers["X-Admin-Key"] = keyOf(); headers["X-Admin-User"] = "admin"; }
+  var tag = method + path;
+  if (INFLIGHT.has(tag)) return { ok: false, status: 0, payload: {} };
+  INFLIGHT.add(tag);
   document.body.classList.add("busy");
-  const started = performance.now();
-  let res, payload, status = 0;
+  var t0 = performance.now(), res, payload, status = 0;
   try {
-    res = await fetch(BASE + path, { method, headers,
+    res = await fetch(BASE + path, { method: method, headers: headers,
       body: body === undefined ? undefined : JSON.stringify(body) });
     status = res.status;
-    payload = await res.json().catch(() => ({}));
-  } catch (e) {
-    payload = { error: String(e) };
-  }
-  INFLIGHT.delete(method + path);
+    payload = await res.json().catch(function () { return {}; });
+  } catch (e) { payload = { error: String(e) }; }
+  INFLIGHT.delete(tag);
   if (!INFLIGHT.size) document.body.classList.remove("busy");
-  const ms = Math.round(performance.now() - started);
-  LAST = { method, path, body, headers, status };
-  logCall({ method, path, body, status, ms, payload });
-  return { ok: status >= 200 && status < 300, status, payload };
+  LAST = { method: method, path: path, body: body };
+  logCall({ method: method, path: path, body: body, status: status,
+            ms: Math.round(performance.now() - t0), payload: payload });
+  return { ok: status >= 200 && status < 300, status: status, payload: payload };
 }
 
 function logCall(c) {
-  const box = $("#entries");
+  var box = $("#entries");
   if (box.firstElementChild && box.firstElementChild.className === "empty") box.innerHTML = "";
-  const d = el("details", "entry");
-  const s = el("summary");
-  s.append(el("span", "m " + c.method, c.method));
-  s.append(el("span", "mono", c.path));
-  const st = el("span", "st " + (c.status >= 200 && c.status < 300 ? "ok" : "bad"),
-                c.status + " · " + c.ms + "ms");
+  var d = el("details", "entry"), s = el("summary");
+  s.append(el("span", "m", c.method), el("span", "mono", c.path));
+  var ok = c.status >= 200 && c.status < 300;
+  var st = el("span", "st", c.status + " / " + c.ms + "ms");
+  st.style.color = ok ? "var(--good)" : "var(--bad)";
   s.append(st);
   d.append(s);
-  const parts = [];
+  var parts = [];
   if (c.body !== undefined) parts.push("// request\n" + JSON.stringify(c.body, null, 2));
   parts.push("// response " + c.status + "\n" + JSON.stringify(c.payload, null, 2));
   d.append(el("pre", null, parts.join("\n\n")));
@@ -351,10 +349,8 @@ function logCall(c) {
 
 function asCurl(c) {
   if (!c) return "";
-  const bits = ["curl -X " + c.method, "'" + location.origin + BASE + c.path + "'"];
-  // On every method, including GET: reads need the key too, and a snippet that 403s is
-  // the first thing anybody building against this API would paste.
-  bits.push("-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'");
+  var bits = ["curl -X " + c.method, "'" + location.origin + BASE + c.path + "'",
+              "-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'"];
   if (c.method !== "GET") bits.push("-H 'X-Admin-User: <who>'");
   if (c.body !== undefined) {
     bits.push("-H 'Content-Type: application/json'");
@@ -363,644 +359,770 @@ function asCurl(c) {
   return bits.join(" \\\n  ");
 }
 
-/* ------------------------------------------------------------------- feedback */
+/* ------------------------------------------------------------------ feedback */
 
-// Errors persist until dismissed. A nine-second timer on a message explaining WHY a
-// change was refused throws away the only instruction the operator was given.
 function banner(kind, text) {
-  const b = el("div", "banner " + kind);
-  b.append(el("strong", null, kind === "bad" ? "Refused. " : "Done. "));
+  var b = el("div", "banner " + kind);
   b.append(document.createTextNode(text));
   if (kind === "bad") {
-    const x = el("button", "sm", "Dismiss");
+    var x = el("button", "sm", "Dismiss");
     x.style.marginLeft = "10px";
-    x.onclick = () => b.remove();
+    x.onclick = function () { b.remove(); };
     b.append(x);
   } else {
-    setTimeout(() => b.remove(), 6000);
+    setTimeout(function () { b.remove(); }, 5000);
   }
   $("#banners").prepend(b);
 }
 
+function describeUse(u) {
+  var out = [];
+  if ((u.reasons || []).length)
+    out.push(u.reasons.length + " fault type" + (u.reasons.length > 1 ? "s" : ""));
+  if ((u.plan_steps || []).length)
+    out.push(u.plan_steps.length + " escalation step" + (u.plan_steps.length > 1 ? "s" : ""));
+  return out.join(" and ");
+}
+
 function handle(r, okMsg) {
-  if (r.ok) { banner("", okMsg); load(); return true; }
-  const p = r.payload || {};
-  let msg = p.error || ("request failed (" + r.status + ")");
+  if (r.ok) { banner("good", okMsg); load(); return true; }
+  if (r.status === 0) return false;             // duplicate in flight, not a failure
+  var p = r.payload || {};
+  var msg = p.error || ("Request failed (" + r.status + ")");
   if (p.problems)     msg += " — " + p.problems.join("; ");
   if (p.used_by)      msg += " — " + describeUse(p.used_by);
   if (p.empty_shifts) msg += " — shift " + p.empty_shifts.join(", ") + " would have nobody";
   if (p.rostered_in)  msg += " — on: " + p.rostered_in.join(", ");
   if (p.unknown)      msg += " — unknown: " + p.unknown.join(", ");
-  if (p.unstaffed)    msg += " — " + Object.entries(p.unstaffed)
-                                .map(([t, sh]) => t + " (" + sh.join(",") + ")").join(", ");
+  if (p.unstaffed)    msg += " — " + Object.keys(p.unstaffed)
+                              .map(function (t) { return t + " (" + p.unstaffed[t].join(",") + ")"; })
+                              .join(", ");
   if (p.placeholders) msg += " — " + p.placeholders.join(", ");
-  // The API writes a plain-English recovery instruction for most refusals and the page
-  // was discarding it — including the exact answer to "somebody has left, now what".
   if (p.detail)       msg += " — " + p.detail;
   if (p.hint)         msg += ". " + p.hint;
   banner("bad", msg);
-  // 2. A rejected change must not stay on screen looking accepted. Controls that commit
-  // on `change` leave the new value displayed after a 409, and the page then confidently
-  // shows something the server rejected.
-  render();
+  render();                                     // never leave a refused change on screen
   return false;
 }
 
-const describeUse = u => [
-  (u.reasons || []).length ? (u.reasons.length + " fault type(s)") : null,
-  (u.plan_steps || []).length ? (u.plan_steps.length + " escalation step(s)") : null,
-].filter(Boolean).join(" and ");
-
-/* ---------------------------------------------------------------------- render */
-
-// Re-draw everything from the last server payload, without refetching. The failure path
-// needs this: a rejected change must not stay on screen looking accepted.
-function render() {
-  if (!STATE) return;
-  renderPilot(); renderPlans(); renderTeams(); renderPeople();
-  renderReasons(); renderSimOptions();
-}
+/* ---------------------------------------------------------------------- load */
 
 async function load() {
-  if (!keyOf()) {
-    $("#banners").innerHTML = "";
-    const b = el("div", "banner warn");
-    b.append(el("strong", null, "Admin key needed. "));
-    b.append(document.createTextNode(
-      "Everything here — including staff phone numbers — is behind the key. " +
-      "Paste it into the box at the top right. If you do not have it, ask whoever set " +
-      "up this system."));
-    $("#banners").append(b);
-    $("#sub").textContent = "locked";
-    return;
+  if (!keyOf()) return showLocked();
+  $("#banners").innerHTML = "";
+  var results = await Promise.all([
+    api("GET", "/api/admin/overview"),
+    api("GET", "/api/admin/assets"),
+    api("GET", "/api/overview")
+  ]);
+  var ov = results[0], as = results[1], lv = results[2];
+  if (!ov.ok) {
+    $("#app").style.display = "none";
+    return showLocked(ov.status === 403 ? "That key was not accepted. " : null);
   }
-  $("#banners").innerHTML = "";   // otherwise the "key needed" warning is pinned forever
-  const r = await api("GET", "/api/admin/overview");
-  if (!r.ok) {
-    banner("bad", r.status === 403 ? "that key was rejected" : "could not load config");
-    return;
-  }
-  STATE = r.payload;
-  $("#version").textContent = STATE.version;
-  // Page build, distinct from config version. Without it there is no way to tell a
-  // stale cached page from a deploy that did not land, and the two look identical.
-  if (STATE.build) $("#build").textContent = STATE.build;
-  $("#sub").textContent = STATE.department + " · " + STATE.people.length +
-    " people · " + STATE.teams.length + " teams";
-
-  const shadow = STATE.shadow_mode;
-  $("#shadowDot").className = "dot " + (shadow ? "warn" : "ok");
-  $("#shadowTxt").textContent = shadow ? "shadow mode — nothing sends" : "live";
-
+  STATE = ov.payload;
+  ASSETS = as.ok ? as.payload : { assets: [], reasons: [] };
+  LIVE = lv.ok ? lv.payload : null;
+  $("#locked").innerHTML = "";
+  $("#app").style.display = "";
+  await refreshSim();
   render();
-  loadShifts(); loadSettings();
-  // Re-run rather than leaving the previous answer on screen: "who gets called right
-  // now" showing the pre-change answer is worse than showing nothing.
-  if ($("#sim").childElementCount) runSim();
-
-  const unrouted = STATE.teams.filter(t => t.targeted && t.empty_shifts.length);
-  if (unrouted.length) {
-    banner("bad", "These teams get called but have empty shifts: " +
-      unrouted.map(t => t.id + " (" + t.empty_shifts.join(",") + ")").join(", "));
-  }
-  if (STATE.people.some(p => p.placeholder)) {
-    banner("warn", "Some people are still sample placeholders — ops-core will refuse to " +
-      "run live until they are replaced with real contacts.");
-  }
+  loadShifts();
+  loadSettings();
 }
 
-/* pilot mode -------------------------------------------------------------- */
-
-// While route_all_to_default is on, everything on this page is stored and inert. Saying
-// so once, permanently, at the top is the difference between a tool people trust and one
-// they quietly stop believing.
-// Always rendered, both ways. Hiding the panel once pilot mode was off made the most
-// consequential switch in the product a one-way door with no indication it existed.
-// It also used to PATCH the raw config API directly, skipping every guard in admin_api
-// and landing in the audit log as an anonymous raw patch.
-function renderPilot() {
-  const box = $("#pilot");
+function showLocked(why) {
+  $("#app").style.display = "none";
+  var box = $("#locked");
   box.innerHTML = "";
-  const p = STATE.pilot_mode || {};
-  const on = !!p.route_all_to_default;
-  const who = p.default_owner_name || p.default_owner || "the default owner";
-
-  const b = el("div", "banner " + (on ? "warn" : ""));
-  b.append(el("strong", null, on ? "One person is getting everything. "
-                                 : "Faults route to their own teams. "));
-  b.append(document.createTextNode(on
-    ? "Every notification goes to " + who + " whichever team owns the fault. Changes "
-      + "below are saved, but will not change who is called until this is switched off."
-    : "Each fault type goes to the team that owns it, using the roster below."));
-
-  const btn = el("button", "sm", on ? "Route by team instead" : "Send everything to " + who);
-  btn.style.marginLeft = "10px";
-  btn.onclick = async () => {
-    const msg = on
-      ? "Route faults to their own teams from now on?\n\nThe roster below decides who "
-        + "is called."
-      : "Send every notification to " + who + " from now on, whichever team owns the "
-        + "fault?";
-    if (!confirm(msg)) return;
-    handle(await api("PUT", "/api/admin/pilot-mode", { enabled: !on }),
-           on ? "Now routing by team" : "Everything now goes to " + who);
-  };
-  b.append(btn);
+  var b = el("div", "banner warn");
+  b.append(el("strong", null, why || "Enter the admin key to continue. "));
+  b.append(document.createTextNode(
+    "Staff phone numbers and the call-out chain are behind it. If you do not have the "
+    + "key, ask whoever set this system up."));
   box.append(b);
 }
 
-/* plans ------------------------------------------------------------------- */
-
-let planDraft = null;
-
-function renderPlans() {
-  const sel = $("#planSel");
-  const keep = sel.value;
-  sel.innerHTML = "";
-  // The payload already carries a human sentence; showing the internal key
-  // ("no_reason_yet", "weaving.electrical") made the operator read engine vocabulary.
-  STATE.plans.forEach(p => sel.append(new Option(p.applies_to || p.id, p.id)));
-  sel.value = STATE.plans.some(p => p.id === keep) ? keep : STATE.plans[0].id;
-  loadPlanDraft();
+async function refreshSim() {
+  var r = await api("GET", "/api/admin/simulate");
+  SIM = r.ok ? r.payload : null;
 }
 
-function currentPlan() { return STATE.plans.find(p => p.id === $("#planSel").value); }
+function render() {
+  if (!STATE) return;
+  renderHeader(); renderHeadline(); renderFacts(); renderNextSteps();
+  renderAssets(); renderRoutingMode(); renderTeams(); renderPeople();
+  renderPlans(); renderReasons();
+}
 
-function loadPlanDraft(force) {
-  const p = currentPlan();
-  if (!p) return;
-  // Adding somebody to a shift used to wipe a half-edited plan, because every successful
-  // mutation calls load(). Keep the draft and say so.
-  if (!force && planDirty) {
-    banner("", "Your unsaved plan changes were kept — save or reload to discard them.");
+/* --------------------------------------------------------------------- header */
+
+function renderHeader() {
+  $("#deptPill").textContent = STATE.department;
+  $("#buildPill").textContent = "v" + STATE.version + " / " + (STATE.build || "?");
+  var p = $("#sendPill");
+  p.className = "pill " + (STATE.shadow_mode ? "warn" : "good");
+  p.textContent = STATE.shadow_mode ? "Nothing is being sent" : "Live, messages are sent";
+}
+
+/* ------------------------------------------------------- 1. what is true now */
+
+function renderHeadline() {
+  var box = $("#headline");
+  box.innerHTML = "";
+  var p = STATE.pilot_mode || {};
+  var on = !!p.route_all_to_default;
+  var owner = STATE.people.filter(function (x) { return x.id === p.default_owner; })[0];
+
+  var who = el("div", "who");
+  if (on) {
+    who.append(el("div", "lead",
+      "Every fault goes to " + (owner ? owner.name : p.default_owner)));
+    var num = el("div", "num");
+    num.append(document.createTextNode("on WhatsApp at "));
+    num.append(el("span", "mono", (owner && owner.whatsapp) || "no number set"));
+    num.append(document.createTextNode(", whichever team owns it."));
+    who.append(num);
+  } else {
+    who.append(el("div", "lead", "Each fault goes to the team that handles it"));
+    who.append(el("div", "num", "Using the shift roster below."));
+  }
+  box.append(who);
+
+  var btn = el("button", on ? "" : "primary",
+    on ? "Route by team instead" : "Send everything to one person");
+  btn.onclick = async function () {
+    var msg = on
+      ? "Route faults to their own teams from now on? The roster below will decide who is called."
+      : "Send every fault to " + (owner ? owner.name : p.default_owner) + " from now on?";
+    if (!confirm(msg)) return;
+    handle(await api("PUT", "/api/admin/pilot-mode", { enabled: !on }),
+      on ? "Now routing by team" : "Everything now goes to one person");
+  };
+  box.append(btn);
+}
+
+function renderFacts() {
+  var box = $("#facts");
+  box.innerHTML = "";
+  var assets = ASSETS.assets || [];
+  var watched = assets.filter(function (a) { return a.in_service; }).length;
+  var stopped = assets.filter(function (a) { return a.stopped_now; }).length;
+  var offplan = assets.filter(function (a) { return a.off_plan; }).length;
+  var samples = STATE.people.filter(function (p) { return p.placeholder; }).length;
+
+  function fact(k, v, s, cls) {
+    var d = el("div", "fact");
+    d.append(el("div", "k", k));
+    var val = el("div", "v", String(v));
+    if (cls) val.style.color = "var(--" + cls + ")";
+    d.append(val);
+    if (s) d.append(el("div", "s", s));
+    box.append(d);
+  }
+
+  fact("Machines watched", watched, watched ? "reporting in" : "none reporting");
+  fact("Stopped now", stopped, stopped ? "with an open fault" : "all running",
+       stopped ? "bad" : "good");
+  if (offplan) fact("Not in production", offplan, "deliberately idle", "warn");
+  if (LIVE) fact("Downtime, 24h",
+    Math.round(Number(LIVE.downtime_minutes_24h) || 0) + "m",
+    (LIVE.incidents_24h || 0) + " stops recorded");
+  if (samples) fact("Sample contacts", samples, "invented numbers", "warn");
+}
+
+function renderNextSteps() {
+  var box = $("#nextSteps");
+  box.innerHTML = "";
+  var samples = STATE.people.filter(function (p) { return p.placeholder; });
+  var items = [];
+
+  if (STATE.shadow_mode) {
+    items.push(["warn", "Nothing is being sent to anybody yet. The whole chain runs and "
+      + "every message is written to a log file instead."]);
+  }
+  if (samples.length) {
+    items.push(["warn", samples.length + " people still have invented sample numbers ("
+      + samples.slice(0, 3).map(function (p) { return p.name; }).join(", ")
+      + (samples.length > 3 ? " and others" : "")
+      + "). The system refuses to go live until they are replaced with real ones."]);
+  }
+  if (SIM && SIM.any_unrouted) {
+    items.push(["bad", "At least one escalation step has nobody to call."]);
+  }
+  items.forEach(function (pair) {
+    var b = el("div", "banner " + pair[0]);
+    b.append(document.createTextNode(pair[1]));
+    box.append(b);
+  });
+
+  // What would actually happen, shown rather than hidden behind a button: it is the only
+  // way to check a roster change without waiting for a real fault.
+  if (!SIM) return;
+  var d = el("details", "more");
+  var line = (SIM.steps || []).map(function (s) {
+    var who = s.recipients.length
+      ? s.recipients.map(function (r) { return r.name; }).join(" and ")
+      : "NOBODY";
+    return who + (s.after_minutes === 0 ? " at once" : " after " + s.after_minutes + "m");
+  }).join(", then ");
+  d.append(el("summary", null, "If a machine stopped right now: " + line));
+
+  var t = el("table"), tb = el("tbody");
+  (SIM.steps || []).forEach(function (s) {
+    var tr = el("tr");
+    tr.append(el("td", null,
+      s.after_minutes === 0 ? "immediately" : "after " + s.after_minutes + " min"));
+    tr.append(el("td", null, s.recipients.map(function (r) {
+      return r.name + " (" + r.address + ")"; }).join(", ") || "nobody"));
+    var x = el("td");
+    if (s.unrouted) x.append(el("span", "tag bad", "nobody"));
+    else if (s.action === "ask_reason") x.append(el("span", "tag quiet", "asks what is wrong"));
+    tr.append(x);
+    tb.append(tr);
+  });
+  t.append(tb);
+  d.append(t);
+  d.append(el("div", "cap", "Shift " + (SIM.shift || "?")
+    + (SIM.pilot_mode && SIM.pilot_mode.route_all_to_default
+       ? ", and everything goes to one person whatever the roster says" : "")));
+  box.append(d);
+}
+
+/* ------------------------------------------------------------- 2. machines */
+
+function renderAssets() {
+  var box = $("#assets");
+  box.innerHTML = "";
+  var assets = ASSETS.assets || [];
+  if (!assets.length) {
+    box.append(el("div", "empty", "No machines are reporting yet."));
     return;
   }
-  $("#planApplies").textContent = "applies to: " + p.applies_to;
-  planDraft = p.steps.map(s => ({ notify: s.notify, wait_minutes: s.wait_minutes,
-                                  action: s.action || null }));
-  renderSteps();
-}
+  var t = el("table"), thead = el("thead"), head = el("tr");
+  ["Machine", "State", "", ""].forEach(function (h) { head.append(el("th", null, h)); });
+  thead.append(head); t.append(thead);
+  var tb = el("tbody");
 
-// Updates only the running totals, leaving the DOM (and focus) alone.
-function recomputeAbsolutes() {
-  let running = 0;
-  $("#steps").querySelectorAll(".step").forEach((row, i) => {
-    running += Number(planDraft[i] && planDraft[i].wait_minutes) || 0;
-    const span = row.querySelector(".running");
-    if (span) span.textContent = "= " + running + " min in";
+  assets.forEach(function (a) {
+    var tr = el("tr");
+    tr.append(el("td", null, a.asset_ref.replace(/_/g, " ")));
+
+    var st = el("td");
+    if (!a.in_service) st.append(el("span", "tag quiet", "retired"));
+    else if (a.off_plan) st.append(el("span", "tag sample", "not in production"));
+    else if (a.stopped_now) st.append(el("span", "tag bad", "stopped"));
+    else st.append(el("span", "tag good", "running"));
+    tr.append(st);
+
+    var detail = el("td");
+    if (a.off_plan) {
+      detail.append(document.createTextNode(
+        a.off_plan.reason.replace(/_/g, " ") + " until "
+        + String(a.off_plan.until).slice(0, 16).replace("T", " ")));
+    }
+    tr.append(detail);
+
+    var act = el("td");
+    act.style.textAlign = "right";
+    if (a.in_service) {
+      if (a.off_plan) {
+        var back = el("button", "sm", "Back in production");
+        back.onclick = async function () {
+          handle(await api("DELETE", "/api/admin/assets/" + a.asset_ref + "/offplan"),
+            a.asset_ref.replace(/_/g, " ") + " is back in production");
+        };
+        act.append(back);
+      } else {
+        var off = el("button", "sm", "Not in production");
+        off.onclick = function () { offplanForm(act, a); };
+        act.append(off);
+      }
+    }
+    tr.append(act);
+    tb.append(tr);
   });
+  t.append(tb);
+  box.append(t);
 }
 
-function renderSteps() {
-  const box = $("#steps");
+function offplanForm(cell, asset) {
+  cell.innerHTML = "";
+  var wrap = el("div", "row");
+  var why = el("select");
+  (ASSETS.reasons || ["no_order", "no_yarn", "maintenance", "other"])
+    .forEach(function (r) { why.append(new Option(r.replace(/_/g, " "), r)); });
+  var hours = el("select");
+  [[4, "for 4 hours"], [8, "for this shift"], [24, "for a day"],
+   [72, "for 3 days"], [168, "for a week"]]
+    .forEach(function (pair) { hours.append(new Option(pair[1], String(pair[0]))); });
+  hours.value = "8";
+  var go = el("button", "sm primary", "Save");
+  go.onclick = async function () {
+    var until = new Date(Date.now() + Number(hours.value) * 3600e3).toISOString();
+    handle(await api("PUT", "/api/admin/assets/" + asset.asset_ref + "/offplan",
+      { reason: why.value, until: until }),
+      asset.asset_ref.replace(/_/g, " ") + " marked not in production");
+  };
+  var no = el("button", "sm", "Cancel");
+  no.onclick = function () { renderAssets(); };
+  wrap.append(why, hours, go, no);
+  cell.append(wrap);
+}
+
+/* -------------------------------------------------------- 3. who is called */
+
+function renderRoutingMode() {
+  var box = $("#routingMode");
   box.innerHTML = "";
-  const teams = STATE.teams.map(t => t.id);
-  let running = 0;
-
-  planDraft.forEach((s, i) => {
-    running += Number(s.wait_minutes) || 0;
-    const row = el("div", "step");
-    row.append(el("div", "n", String(i + 1)));
-
-    const who = el("select");
-    // "owner" is offered in the operator's words, not the engine's.
-    who.append(new Option("whichever team owns this fault", "owner"));
-    teams.forEach(t => who.append(new Option(t, t)));
-    who.value = s.notify;
-    who.onchange = () => { s.notify = who.value; markDirty(); };
-    row.append(who);
-
-    const wrap = el("div", "row tight");
-    const wait = el("input");
-    wait.type = "number"; wait.min = "0"; wait.max = "10080"; wait.style.width = "72px";
-    wait.value = s.wait_minutes;
-    wait.setAttribute("aria-label", "minutes to wait before step " + (i + 1));
-    // NOT oninput -> renderSteps(): that rebuilds the list with innerHTML="" and destroys
-    // the very input being typed into, so "25" became "2" and Save looked armed. The
-    // running total is updated in place instead, and the full re-render waits for blur.
-    wait.oninput = () => {
-      s.wait_minutes = Number(wait.value) || 0;
-      recomputeAbsolutes();
-      markDirty();
-    };
-    wait.onchange = () => renderSteps();
-    wait.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); wait.blur(); } };
-    wrap.append(wait, el("span", "abs", i === 0 ? "min, immediately" : "min later"));
-    row.append(wrap);
-
-    const right = el("div", "row tight");
-    const abs = el("span", "abs running", "= " + running + " min in");
-    right.append(abs);
-    if (s.action === "ask_reason") right.append(el("span", "tag", "asks the reason"));
-    const del = el("button", "sm danger", "Remove");
-    del.onclick = () => { planDraft.splice(i, 1); renderSteps(); markDirty(); };
-    right.append(del);
-    row.append(right);
-
-    box.append(row);
-  });
-  if (!planDraft.length) box.append(el("div", "empty", "No steps — nobody would be called."));
+  if (!(STATE.pilot_mode || {}).route_all_to_default) return;
+  var p = el("p", "cap");
+  p.append(el("strong", null, "These teams are not being used right now. "));
+  p.append(document.createTextNode(
+    "Everything goes to one person until you switch to routing by team, above. Set the "
+    + "roster up here first: the switch is refused while any shift has nobody on it."));
+  box.append(p);
 }
 
-let planDirty = false;
-function markDirty() { planDirty = true; $("#savePlan").disabled = !keyOf(); }
-
-/* teams ------------------------------------------------------------------- */
-
-// Rebuilt from a <select multiple size=1>, which technically worked and was unusable:
-// you could not see who was on a team without opening it, and adding somebody needed a
-// ctrl-click. "Who is on nights?" is the question this screen exists to answer, so the
-// names are simply visible, and add and remove are one click each.
 function renderTeams() {
-  const box = $("#teams");
+  var box = $("#teams");
   box.innerHTML = "";
-  if (!STATE.teams.length) { box.append(el("div", "empty", "No teams yet.")); return; }
-
-  STATE.teams.forEach(t => {
-    const card = el("div", "team");
-
-    const head = el("div", "team-head");
-    const title = el("div");
-    title.append(el("strong", null, t.id));
-    const called = describeUse(t.used_by);
-    title.append(el("div", "cap", called ? "called for " + called : "nothing routes here yet"));
-    head.append(title);
-
-    const del = el("button", "sm danger", "Delete team");
+  if (!STATE.teams.length) {
+    box.append(el("div", "empty", "No teams yet."));
+    return;
+  }
+  STATE.teams.forEach(function (t) {
+    var card = el("div", "team");
+    var head = el("div", "team-head");
+    head.append(el("div", "nm", t.id));
+    var used = describeUse(t.used_by);
+    head.append(el("span", "tag " + (used ? "good" : "quiet"),
+      used ? "called for " + used : "not used"));
+    var del = el("button", "sm danger", "Delete");
     del.disabled = !!(t.used_by.reasons.length || t.used_by.plan_steps.length);
-    del.title = del.disabled ? "faults still route here — move them first" : "";
-    del.onclick = async () => {
-      if (!confirm("Delete team " + t.id + "?")) return;
+    del.title = del.disabled ? "faults still route here, move them first" : "";
+    del.onclick = async function () {
+      if (!confirm("Delete the team " + t.id + "?")) return;
       handle(await api("DELETE", "/api/admin/teams/" + t.id), "Team deleted");
     };
     head.append(del);
     card.append(head);
 
-    const isAll = "all" in t.roster;
-    const buckets = isAll ? ["all"] : ["A", "B", "C"];
-    const grid = el("div", "shifts" + (isAll ? " one" : ""));
-
-    buckets.forEach(k => {
-      const col = el("div", "shift");
-      const label = el("div", "shift-h");
-      label.append(el("span", null, isAll ? "Every shift" : "Shift " + k));
+    var isAll = ("all" in t.roster);
+    var grid = el("div", "shifts" + (isAll ? " one" : ""));
+    (isAll ? ["all"] : ["A", "B", "C"]).forEach(function (k) {
+      var col = el("div", "shift");
+      var h = el("div", "shift-h");
+      h.append(el("span", null, isAll ? "Every shift" : "Shift " + k));
       if (STATE.shift_times && STATE.shift_times[k])
-        label.append(el("span", "abs", STATE.shift_times[k]));
-      col.append(label);
+        h.append(el("span", null, STATE.shift_times[k]));
+      col.append(h);
 
-      const members = (isAll ? t.roster.all : t.roster[k]) || [];
-      const list = el("div", "chips");
-      members.forEach(pid => {
-        const person = STATE.people.find(x => x.id === pid);
-        const chip = el("span", "chip");
-        chip.append(document.createTextNode(person ? person.name : pid));
-        if (person && person.placeholder) chip.append(el("span", "ph", "sample"));
-        const x = el("button", "x", "×");
-        const who = person ? person.name : pid;
-        x.title = "Take " + who + " off this shift";
-        x.setAttribute("aria-label", "Take " + who + " off shift " + k + " of " + t.id);
-        // Confirmed, like Delete team and Remove person. The server only refuses the LAST
-        // person on a TARGETED shift, so on any other shift this just happens — and the
-        // page was inconsistent about which destructions deserve a question.
-        x.onclick = async () => {
-          if (!confirm("Take " + who + " off " + t.id + ", shift " + k + "?")) return;
+      var members = (isAll ? t.roster.all : t.roster[k]) || [];
+      var chips = el("div", "chips");
+      members.forEach(function (pid) {
+        var person = STATE.people.filter(function (x) { return x.id === pid; })[0];
+        var name = person ? person.name : pid;
+        var chip = el("span", "chip");
+        chip.append(document.createTextNode(name));
+        if (person && person.placeholder) chip.append(el("span", "tag sample", "sample"));
+        var x = el("button", "x", "×");
+        x.setAttribute("aria-label", "Take " + name + " off shift " + k + " of " + t.id);
+        x.title = "Take " + name + " off this shift";
+        x.onclick = async function () {
+          if (!confirm("Take " + name + " off " + t.id + ", shift " + k + "?")) return;
           handle(await api("DELETE", "/api/admin/roster/" + t.id + "/" + k + "/" + pid),
-                 who + " taken off " + t.id);
+            name + " taken off " + t.id);
         };
         chip.append(x);
-        list.append(chip);
+        chips.append(chip);
       });
       if (!members.length) {
-        list.append(el("span", "tag " + (t.targeted ? "bad" : "warn"),
-                       t.targeted ? "nobody — faults here would go uncalled" : "nobody yet"));
+        chips.append(el("span", "tag " + (t.targeted ? "bad" : "quiet"),
+          t.targeted ? "nobody on duty" : "nobody yet"));
       }
-      col.append(list);
+      col.append(chips);
       col.append(addControl(t, k));
       grid.append(col);
     });
-
     card.append(grid);
     box.append(card);
   });
 }
 
-// One control that both assigns an existing person and creates a new one, because "add
-// somebody to this team" is a single thought. Splitting it into "create a person, then
-// go and find the team again" is how a roster ends up half-finished.
 function addControl(team, shift) {
-  const wrap = el("div", "add");
-  const sel = el("select");
-  sel.append(new Option("+ add someone…", ""));
-  const already = new Set((("all" in team.roster) ? team.roster.all : team.roster[shift]) || []);
-  STATE.people.filter(p => !already.has(p.id))
-    .forEach(p => sel.append(new Option(p.name, p.id)));
-  sel.append(new Option("— somebody new —", "__new__"));
-
-  sel.onchange = async () => {
-    const v = sel.value;
+  var wrap = el("div");
+  var sel = el("select");
+  sel.append(new Option("add somebody...", ""));
+  var members = (("all" in team.roster) ? team.roster.all : team.roster[shift]) || [];
+  STATE.people.forEach(function (p) {
+    if (members.indexOf(p.id) === -1)
+      sel.append(new Option(p.name + (p.placeholder ? " (sample)" : ""), p.id));
+  });
+  sel.append(new Option("somebody new", "__new__"));
+  sel.onchange = async function () {
+    var v = sel.value;
     sel.value = "";
     if (!v) return;
-    if (v === "__new__") { showNewPerson(team, shift, wrap); return; }
+    if (v === "__new__") return showNewPerson(team, shift, wrap);
     handle(await api("POST", "/api/admin/roster/" + team.id + "/" + shift,
-                     { person_id: v }), "Added to " + team.id);
+      { person_id: v }), "Added to " + team.id);
   };
   wrap.append(sel);
   return wrap;
 }
 
 function showNewPerson(team, shift, wrap) {
-  wrap.querySelectorAll(".newp").forEach(n => n.remove());
-  const form = el("div", "newp row tight");
-  const name = el("input"); name.placeholder = "Name"; name.style.width = "112px";
-  const phone = el("input"); phone.placeholder = "+91…"; phone.style.width = "124px";
-  const go = el("button", "sm primary", "Add");
-  const submitOnEnter = (e) => { if (e.key === "Enter") { e.preventDefault(); go.click(); } };
-  name.onkeydown = submitOnEnter;
-  phone.onkeydown = submitOnEnter;
-  go.onclick = async () => {
-    if (!name.value.trim()) { name.focus(); return; }
+  var old = wrap.querySelectorAll(".newp");
+  for (var i = 0; i < old.length; i++) old[i].remove();
+  var form = el("div", "newp row");
+  form.style.marginTop = "7px";
+  var name = el("input"); name.placeholder = "Name"; name.style.width = "110px";
+  var phone = el("input"); phone.placeholder = "+91..."; phone.style.width = "126px";
+  var go = el("button", "sm primary", "Add");
+  function onEnter(e) { if (e.key === "Enter") { e.preventDefault(); go.click(); } }
+  name.onkeydown = onEnter;
+  phone.onkeydown = onEnter;
+  go.onclick = async function () {
+    if (!name.value.trim()) return name.focus();
     handle(await api("POST", "/api/admin/roster/" + team.id + "/" + shift,
-                     { name: name.value.trim(), whatsapp: phone.value.trim() }),
-           name.value.trim() + " added to " + team.id);
+      { name: name.value.trim(), whatsapp: phone.value.trim() }),
+      name.value.trim() + " added to " + team.id);
   };
-  const cancel = el("button", "sm", "Cancel");
-  cancel.onclick = () => form.remove();
-  form.append(name, phone, go, cancel);
+  var no = el("button", "sm", "Cancel");
+  no.onclick = function () { form.remove(); };
+  form.append(name, phone, go, no);
   wrap.append(form);
   name.focus();
 }
-/* people ------------------------------------------------------------------ */
 
 function renderPeople() {
-  const box = $("#people");
+  var box = $("#people");
   box.innerHTML = "";
-  const table = el("table");
-  const head = el("tr");
-  ["Name", "WhatsApp", "Reached via", "On teams", ""].forEach(h => head.append(el("th", null, h)));
-  table.append(el("thead")).firstChild.append(head);
-  const body = el("tbody");
+  var t = el("table"), thead = el("thead"), head = el("tr");
+  ["Name", "WhatsApp", "On teams", ""].forEach(function (h) { head.append(el("th", null, h)); });
+  thead.append(head); t.append(thead);
+  var tb = el("tbody");
+  var pilotOwner = (STATE.pilot_mode || {}).default_owner;
 
-  STATE.people.forEach(p => {
-    const tr = el("tr");
-    const n = el("td");
+  STATE.people.forEach(function (p) {
+    var tr = el("tr");
+    var n = el("td");
     n.append(document.createTextNode(p.name));
-    if (p.placeholder) n.append(document.createTextNode(" "), el("span", "tag warn", "sample"));
+    if (p.id === pilotOwner) {
+      n.append(document.createTextNode(" "));
+      n.append(el("span", "tag good", "gets everything"));
+    }
+    if (p.placeholder) {
+      n.append(document.createTextNode(" "));
+      n.append(el("span", "tag sample", "sample"));
+    }
     tr.append(n);
 
-    const phoneCell = el("td");
-    const phone = el("input");
+    var pc = el("td");
+    var phone = el("input");
     phone.value = p.whatsapp || "";
-    phone.placeholder = "+91…";
+    phone.placeholder = "+91...";
     phone.style.width = "150px";
-    // Commits on change, which is fine, but it must ask first: this is somebody's
-    // pager number and an accidental edit is a person who stops being reachable.
-    phone.onchange = async () => {
-      const next = phone.value.trim();
+    phone.setAttribute("aria-label", "WhatsApp number for " + p.name);
+    phone.onkeydown = function (e) { if (e.key === "Enter") phone.blur(); };
+    phone.onchange = async function () {
+      var next = phone.value.trim();
       if (next === (p.whatsapp || "")) return;
       if (!next) {
-        banner("bad", "A number cannot be cleared here — to remove somebody, take them "
-                      + "off every shift and then delete them.");
-        render();
-        return;
+        banner("bad", "A number cannot be cleared here. To remove somebody, take them "
+          + "off every shift and then delete them.");
+        return render();
       }
-      if (!confirm("Change " + p.name + "'s number to " + next + "?")) { render(); return; }
+      if (!confirm("Change " + p.name + "'s number to " + next + "?")) return render();
       handle(await api("PATCH", "/api/admin/people/" + p.id, { whatsapp: next }),
-             "Updated " + p.name);
+        "Updated " + p.name);
     };
-    phone.onkeydown = (e) => { if (e.key === "Enter") phone.blur(); };
-    phoneCell.append(phone);
-    tr.append(phoneCell);
+    pc.append(phone);
+    tr.append(pc);
+    tr.append(el("td", null, p.rostered_in.join(", ") || "not on any team"));
 
-    tr.append(el("td", null, p.channel));
-    tr.append(el("td", null, p.rostered_in.join(", ") || "—"));
-
-    const act = el("td");
-    const del = el("button", "sm danger", "Remove");
-    del.disabled = p.rostered_in.length > 0;
-    del.title = del.disabled ? "on a roster — take them off first" : "";
-    del.onclick = async () => {
-      if (!confirm("Remove " + p.name + "?")) return;
+    var act = el("td");
+    act.style.textAlign = "right";
+    var del = el("button", "sm danger", "Remove");
+    del.disabled = p.rostered_in.length > 0 || p.id === pilotOwner;
+    del.title = del.disabled
+      ? (p.id === pilotOwner ? "everything routes to them" : "still on a roster")
+      : "";
+    del.onclick = async function () {
+      if (!confirm("Remove " + p.name + " from the directory?")) return;
       handle(await api("DELETE", "/api/admin/people/" + p.id), "Removed " + p.name);
     };
     act.append(del);
     tr.append(act);
-    body.append(tr);
+    tb.append(tr);
   });
-  table.append(body);
-  box.append(table);
+  t.append(tb);
+  box.append(t);
 }
 
-/* reasons ----------------------------------------------------------------- */
+/* ------------------------------------------------------------------ 4. plans */
+
+function renderPlans() {
+  var sel = $("#planSel");
+  var keep = sel.value;
+  sel.innerHTML = "";
+  STATE.plans.forEach(function (p) { sel.append(new Option(p.applies_to || p.id, p.id)); });
+  var has = STATE.plans.filter(function (p) { return p.id === keep; }).length;
+  sel.value = has ? keep : STATE.plans[0].id;
+  loadPlanDraft();
+}
+
+function currentPlan() {
+  var v = $("#planSel").value;
+  return STATE.plans.filter(function (p) { return p.id === v; })[0];
+}
+
+function loadPlanDraft(force) {
+  var p = currentPlan();
+  if (!p) return;
+  if (!force && planDirty) {
+    banner("warn", "Your unsaved changes to this plan were kept.");
+    return;
+  }
+  planDraft = p.steps.map(function (s) {
+    return { notify: s.notify, wait_minutes: s.wait_minutes, action: s.action || null };
+  });
+  planDirty = false;
+  $("#savePlan").disabled = true;
+  renderSteps();
+}
+
+// Updates the running totals in place. Rebuilding the whole list on every keystroke
+// destroyed the input being typed into, so "25" came out as "2".
+function recomputeAbsolutes() {
+  var running = 0;
+  var rows = $("#steps").querySelectorAll(".step");
+  for (var i = 0; i < rows.length; i++) {
+    running += Number(planDraft[i] && planDraft[i].wait_minutes) || 0;
+    var span = rows[i].querySelector(".running");
+    if (span) span.textContent = "= " + running + " min after it stops";
+  }
+}
+
+function renderSteps() {
+  var box = $("#steps");
+  box.innerHTML = "";
+  var teams = STATE.teams.map(function (t) { return t.id; });
+  var running = 0;
+
+  planDraft.forEach(function (s, i) {
+    running += Number(s.wait_minutes) || 0;
+    var row = el("div", "step");
+    row.append(el("div", "n", String(i + 1)));
+
+    var who = el("select");
+    who.setAttribute("aria-label", "who to contact at step " + (i + 1));
+    who.append(new Option("whichever team handles the fault", "owner"));
+    teams.forEach(function (t) { who.append(new Option(t, t)); });
+    who.value = s.notify;
+    who.onchange = function () { s.notify = who.value; markDirty(); };
+    row.append(who);
+
+    var wrap = el("div", "row");
+    var wait = el("input");
+    wait.type = "number"; wait.min = "0"; wait.max = "10080"; wait.style.width = "70px";
+    wait.value = s.wait_minutes;
+    wait.setAttribute("aria-label", "minutes to wait before step " + (i + 1));
+    wait.oninput = function () {
+      s.wait_minutes = Number(wait.value) || 0;
+      recomputeAbsolutes();
+      markDirty();
+    };
+    wait.onchange = function () { renderSteps(); };
+    wait.onkeydown = function (e) {
+      if (e.key === "Enter") { e.preventDefault(); wait.blur(); }
+    };
+    wrap.append(wait, el("span", "abs", i === 0 ? "min, straight away" : "min later"));
+    row.append(wrap);
+
+    var right = el("div", "row");
+    right.append(el("span", "abs running", "= " + running + " min after it stops"));
+    if (s.action === "ask_reason") right.append(el("span", "tag quiet", "asks what is wrong"));
+    var del = el("button", "sm danger", "Remove");
+    del.onclick = function () { planDraft.splice(i, 1); renderSteps(); markDirty(); };
+    right.append(del);
+    row.append(right);
+    box.append(row);
+  });
+  if (!planDraft.length)
+    box.append(el("div", "empty", "No steps, so nobody would ever be called."));
+}
+
+function markDirty() { planDirty = true; $("#savePlan").disabled = !keyOf(); }
+
+/* ---------------------------------------------------------------- 5. reasons */
 
 function renderReasons() {
-  const box = $("#reasons");
+  var active = STATE.reasons.filter(function (r) { return r.ticketable || r.in_prompt; });
+  var inert = STATE.reasons.filter(function (r) { return !r.ticketable && !r.in_prompt; });
+  reasonTable($("#reasons"), active, false);
+  reasonTable($("#reasonsInert"), inert, true);
+}
+
+function reasonTable(box, rows, quiet) {
   box.innerHTML = "";
-  const table = el("table");
-  const head = el("tr");
-  ["Fault", "Owned by", "In the WhatsApp question"].forEach(h => head.append(el("th", null, h)));
-  table.append(el("thead")).firstChild.append(head);
-  const body = el("tbody");
+  if (!rows.length) { box.append(el("div", "empty", "None.")); return; }
+  var t = el("table"), thead = el("thead"), head = el("tr");
+  ["Fault", "Handled by", "In the WhatsApp question"]
+    .forEach(function (h) { head.append(el("th", null, h)); });
+  thead.append(head); t.append(thead);
+  var tb = el("tbody");
 
-  STATE.reasons.forEach(r => {
-    const tr = el("tr");
+  rows.forEach(function (r) {
+    var tr = el("tr");
     tr.append(el("td", null, r.label));
-
-    const td = el("td");
+    var td = el("td");
     if (r.ticketable) {
-      const sel = el("select");
-      STATE.teams.forEach(t => sel.append(new Option(t.id, t.id)));
+      var sel = el("select");
+      STATE.teams.forEach(function (t2) { sel.append(new Option(t2.id, t2.id)); });
       sel.value = r.owner || "";
       sel.setAttribute("aria-label", "team responsible for " + r.label);
-      sel.onchange = async () => {
-        if (!confirm("Send " + r.label + " to " + sel.value + " from now on?")) {
-          render(); return;
-        }
+      sel.onchange = async function () {
+        if (!confirm("Send " + r.label + " to " + sel.value + " from now on?")) return render();
         handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
-                         { owner: sel.value }), "Reassigned " + r.label);
+          { owner: sel.value }), "Reassigned " + r.label);
       };
       td.append(sel);
     } else {
-      td.append(el("span", "tag", "no ticket"));
+      td.append(el("span", "tag quiet", "recorded only"));
     }
     tr.append(td);
-    tr.append(el("td", null, r.in_prompt ? "yes (locked)" : "no"));
-    body.append(tr);
+    tr.append(el("td", null, r.in_prompt ? "yes" : "no"));
+    tb.append(tr);
   });
-  table.append(body);
-  box.append(table);
-  box.append(el("div", "cap",
-    STATE.notes ? STATE.notes.prompt_list_locked : ""));
+  t.append(tb);
+  box.append(t);
+  if (quiet) {
+    box.append(el("div", "cap",
+      "These are recorded against a stop for reporting, but nobody is assigned and no "
+      + "ticket is opened, so there is nothing to set here."));
+  }
 }
 
-/* shifts ------------------------------------------------------------------ */
-
-let shiftDraft = null;
+/* --------------------------------------------------------------- 6. timings */
 
 async function loadShifts() {
-  const r = await api("GET", "/api/admin/shifts");
+  var r = await api("GET", "/api/admin/shifts");
   if (!r.ok) return;
   shiftDraft = Object.assign({}, r.payload.shifts);
   $("#tz").textContent = r.payload.timezone || "no timezone set";
-  const box = $("#shifts");
+  var box = $("#shifts");
   box.innerHTML = "";
-  ["A", "B", "C"].forEach(k => {
-    const l = el("label", "f", "Shift " + k);
-    const i = el("input");
+  ["A", "B", "C"].forEach(function (k) {
+    var l = el("label", "f", "Shift " + k);
+    var i = el("input");
     i.value = shiftDraft[k] || "";
     i.placeholder = "06:00-14:00";
     i.style.width = "128px";
-    i.oninput = () => { shiftDraft[k] = i.value.trim(); $("#saveShifts").disabled = !keyOf(); };
+    i.oninput = function () {
+      shiftDraft[k] = i.value.trim();
+      $("#saveShifts").disabled = !keyOf();
+    };
     l.append(i);
     box.append(l);
   });
 }
 
-/* settings ---------------------------------------------------------------- */
-
-let settingsDraft = null;
-
 async function loadSettings() {
-  const r = await api("GET", "/api/admin/settings");
+  var r = await api("GET", "/api/admin/settings");
   if (!r.ok) return;
-  const d = r.payload;
+  var d = r.payload;
   settingsDraft = {
     short_stop_seconds: d.short_stop_seconds,
-    recurrence: Object.assign({}, d.recurrence),
+    recurrence: Object.assign({}, d.recurrence)
   };
-  const box = $("#settings");
+  var box = $("#settings");
   box.innerHTML = "";
 
-  const mk = (label, suffix, get, set, min) => {
-    const l = el("label", "f", label);
-    const i = el("input");
-    i.type = "number"; i.min = String(min == null ? 0 : min);
-    i.value = get(); i.style.width = "92px";
-    i.oninput = () => { set(Number(i.value)); $("#saveSettings").disabled = !keyOf(); };
-    const wrap = el("div", "row tight");
-    wrap.append(i, el("span", "abs", suffix));
-    l.append(wrap);
+  function mk(label, suffix, get, set, min) {
+    var l = el("label", "f", label);
+    var i = el("input");
+    i.type = "number";
+    i.min = String(min == null ? 0 : min);
+    i.value = get();
+    i.style.width = "88px";
+    i.oninput = function () { set(Number(i.value)); $("#saveSettings").disabled = !keyOf(); };
+    var w = el("div", "row");
+    w.append(i, el("span", "abs", suffix));
+    l.append(w);
     return l;
-  };
+  }
 
-  const row = el("div", "row");
+  var row = el("div", "row");
   row.append(mk("Ignore stops shorter than", "seconds",
-    () => settingsDraft.short_stop_seconds,
-    v => settingsDraft.short_stop_seconds = v));
-  row.append(mk("Repeat counts as", "faults",
-    () => settingsDraft.recurrence.threshold,
-    v => settingsDraft.recurrence.threshold = v, 2));
+    function () { return settingsDraft.short_stop_seconds; },
+    function (v) { settingsDraft.short_stop_seconds = v; }));
+  row.append(mk("Treat as a repeat after", "faults",
+    function () { return settingsDraft.recurrence.threshold; },
+    function (v) { settingsDraft.recurrence.threshold = v; }, 2));
   row.append(mk("within", "hours",
-    () => settingsDraft.recurrence.window_hours,
-    v => settingsDraft.recurrence.window_hours = v, 1));
+    function () { return settingsDraft.recurrence.window_hours; },
+    function (v) { settingsDraft.recurrence.window_hours = v; }, 1));
   row.append(mk("then jump to step", "",
-    () => settingsDraft.recurrence.jump_to_step,
-    v => settingsDraft.recurrence.jump_to_step = v, 1));
+    function () { return settingsDraft.recurrence.jump_to_step; },
+    function (v) { settingsDraft.recurrence.jump_to_step = v; }, 1));
   box.append(row);
-
-  // The prompt text and the timer that backs it come from different files. If they
-  // disagree the message is promising something the system will not do, and nobody
-  // reading either file alone would notice.
-  (d.warnings || []).forEach(w => box.append(el("div", "banner warn", w)));
+  (d.warnings || []).forEach(function (w) { box.append(el("div", "banner warn", w)); });
 }
 
-/* simulate ---------------------------------------------------------------- */
+/* ------------------------------------------------------------------- wiring */
 
-function renderSimOptions() {
-  const sel = $("#simSel");
-  sel.innerHTML = "";
-  sel.append(new Option("a loom stops, reason not given yet", ""));
-  STATE.reasons.filter(r => r.ticketable)
-    .forEach(r => sel.append(new Option(r.label, r.code)));
-}
-
-async function runSim() {
-  const code = $("#simSel").value;
-  const r = await api("GET", "/api/admin/simulate" + (code ? "?reason=" + encodeURIComponent(code) : ""));
-  const box = $("#sim");
-  box.innerHTML = "";
-  if (!r.ok) { box.append(el("div", "empty", "simulation failed")); return; }
-  const d = r.payload;
-
-  const notes = ["shift " + (d.shift || "?")];
-  if (d.shadow_mode) notes.push("shadow mode — nothing would actually send");
-  if (d.pilot_mode && d.pilot_mode.route_all_to_default)
-    notes.push("pilot mode — everything goes to " +
-               (d.pilot_mode.default_owner_name || d.pilot_mode.default_owner) +
-               " whatever the roster says");
-  box.append(el("div", "cap", notes.join(" · ")));
-
-  const table = el("table");
-  const head = el("tr");
-  ["", "When", "Who", ""].forEach(h => head.append(el("th", null, h)));
-  table.append(el("thead")).firstChild.append(head);
-  const body = el("tbody");
-  d.steps.forEach(s => {
-    const tr = el("tr");
-    tr.append(el("td", null, String(s.step)));
-    tr.append(el("td", null, s.after_minutes === 0 ? "immediately"
-                                                  : s.after_minutes + " min in"));
-    tr.append(el("td", null, s.recipients.map(p => p.name).join(", ") || "—"));
-    const t = el("td");
-    if (s.unrouted) t.append(el("span", "tag bad", "nobody"));
-    else if (s.action === "ask_reason") t.append(el("span", "tag", "asks the reason"));
-    tr.append(t);
-    body.append(tr);
-  });
-  table.append(body);
-  box.append(table);
-  if (d.any_unrouted) banner("bad", "At least one step has nobody to call.");
-}
-
-/* wiring ------------------------------------------------------------------ */
-
-$("#toggleLog").onclick = () => {
-  document.body.classList.toggle("log-open");
-  $("#toggleLog").textContent = document.body.classList.contains("log-open")
-    ? "Hide API log" : "API log";
+var keyTimer = null;
+$("#key").oninput = function () {
+  clearTimeout(keyTimer);
+  keyTimer = setTimeout(function () { if (keyOf()) load(); }, 400);
 };
 $("#reload").onclick = load;
-let keyDebounce = null;
-$("#key").oninput = () => {
-  $("#savePlan").disabled = !keyOf();
-  clearTimeout(keyDebounce);
-  keyDebounce = setTimeout(() => { if (keyOf()) load(); }, 500);
+$("#toggleLog").onclick = function () {
+  document.body.classList.toggle("log-open");
+  $("#toggleLog").textContent =
+    document.body.classList.contains("log-open") ? "Hide API log" : "API log";
 };
-$("#planSel").onchange = loadPlanDraft;
-$("#addStep").onclick = () => {
+$("#planSel").onchange = function () { loadPlanDraft(); };
+$("#addStep").onclick = function () {
   planDraft.push({ notify: "owner", wait_minutes: 15, action: null });
-  renderSteps(); markDirty();
+  renderSteps();
+  markDirty();
 };
-$("#savePlan").onclick = async () => {
+$("#savePlan").onclick = async function () {
   handle(await api("PUT", "/api/admin/plans/" + $("#planSel").value, { steps: planDraft }),
-         "Plan saved");
+    "Saved");
 };
-$("#addTeam").onclick = async () => {
-  const name = $("#newTeam").value.trim();
+$("#addTeam").onclick = async function () {
+  var name = $("#newTeam").value.trim();
   if (!name) return;
-  if (handle(await api("POST", "/api/admin/teams", { name, members: { A: [], B: [], C: [] } }),
-             "Team created")) $("#newTeam").value = "";
-};
-$("#addPerson").onclick = async () => {
-  const name = $("#newName").value.trim(), whatsapp = $("#newPhone").value.trim();
-  if (!name) return;
-  if (handle(await api("POST", "/api/admin/people", { name, whatsapp }), "Person added")) {
-    $("#newName").value = ""; $("#newPhone").value = "";
+  if (handle(await api("POST", "/api/admin/teams",
+      { name: name, members: { A: [], B: [], C: [] } }), "Team created")) {
+    $("#newTeam").value = "";
   }
 };
-$("#saveShifts").onclick = async () => {
+$("#newTeam").onkeydown = function (e) { if (e.key === "Enter") $("#addTeam").click(); };
+$("#saveShifts").onclick = async function () {
   handle(await api("PUT", "/api/admin/shifts", { shifts: shiftDraft }), "Shift times saved");
 };
-$("#saveSettings").onclick = async () => {
-  handle(await api("PUT", "/api/admin/settings", settingsDraft), "Timings saved");
+$("#saveSettings").onclick = async function () {
+  handle(await api("PUT", "/api/admin/settings", settingsDraft), "Saved");
 };
-$("#runSim").onclick = runSim;
-$("#clearLog").onclick = () => { $("#entries").innerHTML = '<div class="empty">No calls yet.</div>'; };
-$("#copyCurl").onclick = async () => {
+$("#clearLog").onclick = function () {
+  $("#entries").innerHTML = '<div class="empty">Nothing yet.</div>';
+};
+$("#copyCurl").onclick = async function () {
   if (!LAST) return;
-  try { await navigator.clipboard.writeText(asCurl(LAST)); banner("", "curl copied"); }
-  catch { banner("bad", "clipboard blocked — the call is in the log above"); }
+  try {
+    await navigator.clipboard.writeText(asCurl(LAST));
+    banner("good", "Copied.");
+  } catch (e) {
+    banner("bad", "Clipboard blocked, the call is in the log above.");
+  }
 };
 
+showLocked();
 load();
 </script>
 </body>
