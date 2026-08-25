@@ -44,7 +44,7 @@ codes:
       en: Electrical fault
       hi: बिजली की खराबी
     ticketable: true
-    owner: electrician
+    owner: engineering
     expected_minutes: 30
     show_in_prompt: true
 
@@ -53,7 +53,7 @@ codes:
       en: Machine fault
       hi: मशीन की खराबी
     ticketable: true
-    owner: fitter
+    owner: engineering
     expected_minutes: 45
     show_in_prompt: true
 
@@ -62,7 +62,7 @@ codes:
       en: Yarn not arrived
       hi: धागा नहीं आया
     ticketable: true
-    owner: yarn_store
+    owner: engineering
     expected_minutes: 20
     show_in_prompt: true
 
@@ -91,7 +91,7 @@ codes:
   - code: weaving.operator_absent
     label: { en: No operator assigned }
     ticketable: true
-    owner: supervisor
+    owner: engineering
     expected_minutes: 20
 
   - code: weaving.cloth_fault

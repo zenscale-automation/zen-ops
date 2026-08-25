@@ -2,40 +2,41 @@ department: weaving
 
 # Timers are keyed off the reason, not a single global clock. 15 minutes is reasonable
 # for an unknown stop; once the reason is "electrical fault" the useful escalation is
-# against how long an electrician *should* take. "owner" == the ticket's own owner_role.
+# against how long that repair *should* take. "owner" == the ticket's own owner_role.
+#
+# PILOT: every step resolves to the one engineering team, so these ladders currently
+# describe how often Shailendra is told rather than who else gets pulled in. That is
+# deliberate — the shape is real and starts doing more work the moment a second team
+# exists, and pretending to escalate to people who do not exist yet would be theatre.
 ladders:
   default:
     - { after_minutes: 0,  notify: owner }
-    - { after_minutes: 15, notify: supervisor }
-    - { after_minutes: 40, notify: shift_incharge, repeat_every_minutes: 60 }
+    - { after_minutes: 30, notify: owner }
+    - { after_minutes: 75, notify: owner, repeat_every_minutes: 60 }
 
   weaving.electrical:
     - { after_minutes: 0,  notify: owner }
-    - { after_minutes: 20, notify: supervisor }
-    - { after_minutes: 45, notify: shift_incharge }
+    - { after_minutes: 25, notify: owner }
+    - { after_minutes: 60, notify: owner, repeat_every_minutes: 60 }
 
   weaving.mechanical:
     - { after_minutes: 0,  notify: owner }
-    - { after_minutes: 30, notify: supervisor }
-    - { after_minutes: 60, notify: shift_incharge }
+    - { after_minutes: 35, notify: owner }
+    - { after_minutes: 90, notify: owner, repeat_every_minutes: 60 }
 
   # The "unknown" ladder is the entire Phase-1 WhatsApp flow expressed as configuration
   # — no separate code path. action: ask_reason sends the numbered reason prompt.
-  # Timings chosen from a day of real feed data rather than inherited. Across looms 91
-  # and 92 the median stop that clears the 2-minute gate lasts 3-5 minutes and resolves
-  # itself, so asking at 15 minutes catches roughly 2 stops per loom per shift — which is
-  # fine at four looms and about 90 messages a shift at forty-four. Nobody reads the
-  # ninetieth message. 20 minutes is the pilot setting; raise it as looms come online and
-  # watch what actually gets answered.
   #
-  # repeat_every_minutes on the last rung is the whole point: phones are not always
-  # looked at over machine noise, so being told once is not being told. It keeps asking
-  # while the loom is still stopped, and stops the moment it runs again — the only
-  # signal anybody trusts.
+  # Timings come from a day of real feed data rather than being inherited. Across looms
+  # 91 and 92 the median stop that clears the 2-minute gate lasts 3-5 minutes and clears
+  # itself, so asking at 15 minutes caught about 2 stops per loom per shift — fine at
+  # four looms, roughly 90 messages a shift at forty-four, and nobody reads the ninetieth.
+  # 20 minutes is the pilot setting. Raise it as looms come online and watch what
+  # actually gets answered.
   unknown:
-    - { after_minutes: 20, notify: supervisor,     action: ask_reason }
-    - { after_minutes: 45, notify: supervisor,     action: ask_reason }
-    - { after_minutes: 90, notify: shift_incharge, repeat_every_minutes: 60 }
+    - { after_minutes: 20, notify: engineering, action: ask_reason }
+    - { after_minutes: 45, notify: engineering, action: ask_reason }
+    - { after_minutes: 90, notify: engineering, repeat_every_minutes: 60 }
 
 recurrence:
   window_hours: 8

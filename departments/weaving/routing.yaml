@@ -4,56 +4,30 @@ department: weaving
 # electrician covering three areas); hardcoding names means five files to edit when
 # somebody leaves. "owner" is a reserved symbolic role used in escalation ladders — it
 # resolves to the ticket's own owner_role.
-roles:
-  electrician:
-    A: [ravi_k]
-    B: [sukhwinder_s]
-    C: [ravi_k]                 # night covered on overtime
-  fitter:
-    A: [jaspal_s, harjit_s]
-    B: [jaspal_s]
-    C: [harjit_s]
-  yarn_store:
-    A: [store_desk]
-    B: [store_desk]
-    C: [store_desk]
-  supervisor:
-    A: [amarjit_s]
-    B: [gurmeet_s]
-    C: [balwinder_s]
-  shift_incharge:
-    all: [production_manager]
-
-# PLACEHOLDER ROSTER — invented names and dummy numbers, pending the real one from
-# Shingora. `placeholder: true` is load-bearing: ops-core refuses to start in live mode
-# while any routed person still carries it, so these numbers can never be messaged by
-# accident. Delete the flag as each person is replaced with a real contact.
-# One named person who catches anything a role does not resolve to — a reason with no
-# owner, or a shift with nobody rostered. Without it those notifications have no
-# recipient at all, which is the "no owner" defect recreated inside the fix for it.
 #
-# route_all_to_default sends EVERY notification to that person regardless of role.
-# That is the right setting for the pilot: until the real per-role roster exists,
-# one accountable person is honest, and per-role routing that resolves to invented
-# names is not. Turn it off once the roster is in.
-# Shailendra, engineering head — the one accountable person for the pilot. Named here
-# rather than left as the invented "production_manager" so route_all_to_default points at
-# somebody who actually exists and can actually be reached.
+# PILOT: one real team with one real person in it. The invented roster this file used to
+# carry — Ravi, Jaspal, Harjit and five others with +9190000000x numbers — was removed
+# rather than left in place, because a screen full of people who do not exist makes the
+# system look configured when it is not, and every downtime report drawn from it would
+# be attributed to nobody real. Add the rest as they are actually confirmed.
+roles:
+  engineering:
+    all: [shailendra]
+
+# Everything a role cannot resolve falls back to this person. With one team and one
+# person it is the same human either way, which is the point: there is no path through
+# this config that reaches nobody.
 default_owner: shailendra
-route_all_to_default: true
+
+# Deliberately OFF. When true, every notification goes to default_owner regardless of
+# which team owns the fault — which means the roster on screen decides nothing, and
+# somebody reading it is being shown something untrue. Routing by team with a roster of
+# one reaches exactly the same person, honestly, and starts working the moment a second
+# person is added.
+route_all_to_default: false
 
 people:
-  ravi_k:       { name: Ravi Kumar,     whatsapp: "+919000000001", rfid: "04A2...", placeholder: true }
-  sukhwinder_s: { name: Sukhwinder S,   whatsapp: "+919000000002", rfid: "04C1...", placeholder: true }
-  jaspal_s:     { name: Jaspal Singh,   whatsapp: "+919000000003", rfid: "04B7...", placeholder: true }
-  harjit_s:     { name: Harjit Singh,   whatsapp: "+919000000004", rfid: "04D9...", placeholder: true }
-  store_desk:   { name: Yarn store,     gchat_space: "spaces/AAAAexample", placeholder: true }
-  amarjit_s:    { name: Amarjit Singh,  whatsapp: "+919000000005", placeholder: true }
-  gurmeet_s:    { name: Gurmeet Singh,  whatsapp: "+919000000006", placeholder: true }
-  balwinder_s:  { name: Balwinder S,    whatsapp: "+919000000007", placeholder: true }
-  production_manager:
-                { name: Production Mgr, whatsapp: "+919000000008", placeholder: true }
-  shailendra:   { name: Shailendra, whatsapp: "+918696099222" }
+  shailendra: { name: Shailendra, whatsapp: "+918696099222" }
 
 # The shift block does double duty: it resolves who is on duty at 03:00, and it is what
 # auto_classify uses to detect the changeover pattern. One source of truth for both.
