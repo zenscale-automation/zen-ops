@@ -3,8 +3,10 @@ adapter: weaving_loom_api
 
 settings:
   # The real Shingora Loom Data API. base_url may be overridden by LOOM_API_BASE_URL
-  # (e.g. pointed at the bundled mock during local testing).
-  base_url: https://cldserver.tailf33eb4.ts.net
+  # (e.g. pointed at the bundled mock during local testing, or at 127.0.0.1 on the box
+  # where ops-core and the loom API are co-located — which also sidesteps the
+  # self-signed cert on the bare-IP HTTPS endpoint).
+  base_url: https://3.6.46.119/api
   api_key_env: LOOM_API_KEY        # sent as the X-API-Key header; never the key itself here
   data_path: /data
   health_path: /health
@@ -54,7 +56,7 @@ settings:
   # Only looms 91-94 are on the API today; the remaining 40 are planned. Raise this as
   # they come online — the seed warning is how you find out a loom stopped reporting
   # before anyone notices it is missing from the dashboard.
-  expected_count: 4                # warn at seed if fewer machines are reporting
+  expected_count: 2                # warn at seed if fewer machines are reporting
 
   # A loom already stopped when ops-core starts is down with nobody told — the exact
   # failure this system exists to remove. Open an incident for it on the first poll

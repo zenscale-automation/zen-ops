@@ -1,0 +1,22 @@
+# Credentials — never commit
+.env
+.env.*
+!.env.example
+
+# Personal, machine-specific Claude Code settings
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Runtime
+logs/*.log
+*.sqlite
+*.db
+
+# OS
+.DS_Store

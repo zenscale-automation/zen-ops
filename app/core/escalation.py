@@ -59,7 +59,10 @@ def compute_start(c, cfg: "config.Config", asset_id: str, code: str) -> tuple[in
         (asset_id, code, since),
     ).fetchone()
     prior = row["n"] if row else 0
-    if prior + 1 >= threshold:  # this occurrence is the Nth
+    # `prior` ALREADY includes the ticket just inserted by incidents._open_ticket —
+    # that INSERT and this SELECT share one cursor inside one transaction. Adding 1
+    # here counted the current occurrence twice and fired the override a fault early.
+    if prior >= threshold:  # this occurrence is the Nth
         return int(rec.get("rung", 0)), "recurrence"
     return 0, "timer"
 

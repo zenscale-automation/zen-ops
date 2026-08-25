@@ -9,6 +9,7 @@ exponential backoff. Delivery is at-least-once; the key makes that safe.
 from __future__ import annotations
 
 import json
+import logging
 
 from .. import clock, db
 from . import events
@@ -16,6 +17,8 @@ from . import events
 _BASE_BACKOFF_S = 5
 _MAX_BACKOFF_S = 300
 _MAX_ATTEMPTS = 8
+
+log = logging.getLogger("ops.outbox")
 
 
 def enqueue(c, channel: str, recipient: str, payload: dict, dedupe_key: str,
@@ -79,7 +82,11 @@ def drain(cfg, limit: int = 50) -> dict:
                         (attempts, nxt, r["id"]),
                     )
                 retried += 1
-            _ = exc
+            log.warning(
+                "outbox delivery failed id=%s channel=%s attempt=%s/%s: %s",
+                r["id"], r["channel"], attempts, _MAX_ATTEMPTS, exc,
+                exc_info=attempts >= _MAX_ATTEMPTS,
+            )
     return {"sent": sent, "failed": failed, "retried": retried}
 
 

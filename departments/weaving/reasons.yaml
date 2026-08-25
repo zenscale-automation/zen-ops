@@ -121,7 +121,7 @@ codes:
     expected_minutes: 10
 
   - code: short_stop
-    label: { en: Short stop, operator attended }
+    label: { en: "Short stop, operator attended" }
     ticketable: false
     expected_minutes: 1
 
