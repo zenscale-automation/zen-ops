@@ -137,6 +137,28 @@ def _targeted_teams(cfg) -> set:
     return {r for r in out if r}
 
 
+def _pilot_mode(cfg) -> dict:
+    """route_all_to_default sends EVERY page to one person regardless of which team owns
+    the fault. It is the right setting before a real roster exists — one accountable
+    person is honest, per-role routing into invented names is not — but while it is on,
+    every team and roster edit made here is STORED AND INERT. An admin screen that lets
+    someone rewire the call-out chain and shows no sign that nothing will change is worse
+    than one that refuses the edit, so this is reported on every read."""
+    on = bool(cfg.route_all_to_default)
+    owner = cfg.routing.get("default_owner")
+    person = (cfg.people or {}).get(owner) or {}
+    return {
+        "route_all_to_default": on,
+        "default_owner": owner,
+        "default_owner_name": person.get("name", owner),
+        "explanation": (
+            "Pilot mode is ON: every notification goes to %s no matter which team owns "
+            "the fault. Team and roster changes are saved but will not change who is "
+            "called until pilot mode is turned off." % (person.get("name", owner) or "the default owner")
+        ) if on else None,
+    }
+
+
 def _roster_of(cfg, team: str) -> dict:
     spec = (cfg.roles or {}).get(team, {}) or {}
     if "all" in spec:
@@ -202,6 +224,7 @@ def overview():
             "ticketable": bool(c.get("ticketable")),
             "in_prompt": bool(c.get("show_in_prompt")),
         } for c in cfg.codes],
+        "pilot_mode": _pilot_mode(cfg),
         "notes": {
             "prompt_list_locked": "Which reasons appear in the WhatsApp prompt is fixed by "
                                   "the approved template. Changing it needs a new template "
@@ -579,6 +602,7 @@ def simulate():
     return jsonify({
         "reason": code, "plan": BUILTIN_PLANS.get(key, key), "at": when, "shift": shift,
         "shadow_mode": cfg.shadow_mode,
+        "pilot_mode": _pilot_mode(cfg),
         "steps": out,
         "any_unrouted": any(s["unrouted"] for s in out),
     })
