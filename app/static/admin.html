@@ -228,7 +228,10 @@ const keyOf = () => $("#key").value.trim();
 async function api(method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (keyOf() && method !== "GET") {
+  // The key goes on reads as well as writes. /api/admin/overview returns every
+  // person's mobile number, so a read without a key is a phone-book leak, not a
+  // convenience.
+  if (keyOf()) {
     headers["X-Admin-Key"] = keyOf();
     headers["X-Admin-User"] = "admin-demo";
   }
@@ -309,8 +312,22 @@ const describeUse = u => [
 /* ---------------------------------------------------------------------- render */
 
 async function load() {
+  if (!keyOf()) {
+    $("#banners").innerHTML = "";
+    const b = el("div", "banner warn");
+    b.append(el("strong", null, "Admin key needed. "));
+    b.append(document.createTextNode(
+      "Everything here — including staff phone numbers — is behind the key. " +
+      "Paste it in the field at the top right. On the server it is OPS_ADMIN_API_KEY in .env."));
+    $("#banners").append(b);
+    $("#sub").textContent = "locked";
+    return;
+  }
   const r = await api("GET", "/api/admin/overview");
-  if (!r.ok) { banner("bad", "could not load config"); return; }
+  if (!r.ok) {
+    banner("bad", r.status === 403 ? "that key was rejected" : "could not load config");
+    return;
+  }
   STATE = r.payload;
   $("#version").textContent = STATE.version;
   $("#sub").textContent = STATE.department + " · " + STATE.people.length +
@@ -628,7 +645,12 @@ async function runSim() {
 /* wiring ------------------------------------------------------------------ */
 
 $("#reload").onclick = load;
-$("#key").oninput = () => { $("#savePlan").disabled = !keyOf(); };
+let keyDebounce = null;
+$("#key").oninput = () => {
+  $("#savePlan").disabled = !keyOf();
+  clearTimeout(keyDebounce);
+  keyDebounce = setTimeout(() => { if (keyOf()) load(); }, 500);
+};
 $("#planSel").onchange = loadPlanDraft;
 $("#addStep").onclick = () => {
   planDraft.push({ notify: "owner", wait_minutes: 15, action: null });

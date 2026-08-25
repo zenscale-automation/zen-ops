@@ -80,6 +80,19 @@ def _err(status: int, message: str, **extra):
     return jsonify(body), status
 
 
+def _read_guard():
+    """Reads need the key too, not just writes.
+
+    /api/admin/overview returns the roster — every person's name and mobile number — and
+    /api/admin/simulate returns who would be called, with their number attached. Behind
+    the SSH tunnel that is nobody's problem. The moment this is proxied for Zenscale it
+    is the plant's phone book on the open internet, and a read-only leak is still a leak.
+    Returns None when the caller may proceed, or a 403 response when they may not.
+    """
+    ok, why = _authorised()
+    return None if ok else _err(403, why)
+
+
 def _apply(scope: str, patch: dict, actor: str, summary: dict):
     """Validate a proposed patch, persist it, hot-reload, and audit it.
 
@@ -177,6 +190,9 @@ def _empty_shifts(roster: dict) -> list:
 @bp.get("/api/admin/overview")
 def overview():
     """Everything the admin UI needs in one call, so the page has no waterfall."""
+    denied = _read_guard()
+    if denied:
+        return denied
     cfg = _cfg()
     overrides = config.load_overrides()
     targeted = _targeted_teams(cfg)
@@ -238,6 +254,9 @@ def overview():
 
 @bp.get("/api/admin/people")
 def list_people():
+    denied = _read_guard()
+    if denied:
+        return denied
     return jsonify({"people": overview().json["people"]})
 
 
@@ -459,6 +478,9 @@ def _plans_payload(cfg) -> list:
 
 @bp.get("/api/admin/plans")
 def list_plans():
+    denied = _read_guard()
+    if denied:
+        return denied
     return jsonify({"version": _cfg().version, "plans": _plans_payload(_cfg())})
 
 
@@ -568,6 +590,9 @@ def simulate():
     """Who would actually be called, right now, for a given reason — resolved through the
     live shift calendar. The single most useful thing in the UI: it turns an abstract
     roster edit into a list of names before anyone's phone rings."""
+    denied = _read_guard()
+    if denied:
+        return denied
     from ..core import routing
 
     cfg = _cfg()

@@ -49,8 +49,19 @@ def _actor() -> str:
     return request.headers.get("X-Admin-User", "api")
 
 
+def _read_guard():
+    """Reads need the key too. The effective config includes routing.people — every
+    name and mobile number in the plant — so an unauthenticated GET is a phone-book
+    leak the moment this is proxied anywhere."""
+    ok, why = _authorised()
+    return None if ok else (jsonify({"error": why}), 403)
+
+
 @bp.get("/api/config")
 def get_config():
+    denied = _read_guard()
+    if denied:
+        return denied
     cfg = current_app.config["OPS_CFG"]
     overrides = config.load_overrides()
     return jsonify({
@@ -69,6 +80,9 @@ def get_config():
 
 @bp.get("/api/config/<scope>")
 def get_scope(scope: str):
+    denied = _read_guard()
+    if denied:
+        return denied
     cfg = current_app.config["OPS_CFG"]
     if scope not in ("reasons", "routing", "escalation", "source"):
         return jsonify({"error": f"unknown scope '{scope}'"}), 404
