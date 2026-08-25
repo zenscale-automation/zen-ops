@@ -65,11 +65,27 @@ def init(params: dict, table_prefix: str = "") -> None:
     migrate()
 
 
+# MySQL scopes FOREIGN KEY and CHECK constraint names to the DATABASE, not the table.
+# Two prefixed installs in one database therefore collide on `fk_inc_asset` even though
+# their tables are cleanly separated — and the collision surfaces as error 1826, which
+# migrate() treats as "already applied" and skips. The CREATE TABLE is silently dropped,
+# and the next table's foreign key to it fails with a completely unrelated 1824.
+#
+# Prefixing constraint names too is what makes OPS_TABLE_PREFIX actually deliver the
+# thing it exists for: more than one ops-core sharing the plant's database.
+_CONSTRAINT_RE = re.compile(r"\bCONSTRAINT\s+(`?)(\w+)\1", re.IGNORECASE)
+
+
 def _apply_prefix(sql: str) -> str:
     if not _prefix:
         return sql
     for t, rx in _TABLE_RE.items():
         sql = rx.sub(_prefix + t, sql)
+    sql = _CONSTRAINT_RE.sub(
+        lambda m: f"CONSTRAINT {m.group(1)}{_prefix}{m.group(2)}{m.group(1)}"
+        if not m.group(2).startswith(_prefix) else m.group(0),
+        sql,
+    )
     return sql
 
 
