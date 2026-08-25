@@ -280,14 +280,16 @@ def test_every_change_is_audited(cfg, monkeypatch):
 
 
 def test_delete_reverts_to_the_yaml(cfg, monkeypatch):
+    # Uses a key that still exists — the timing keys this used to patch were removed
+    # when every timing moved to the ladders.
     monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
     client = _client(cfg)
-    original = cfg.reprompt_after_minutes
+    original = cfg.min_duration_seconds
     client.patch("/api/config/reasons", headers=_hdr(),
-                 json={"defaults": {"reprompt_after_minutes": 99}})
-    assert cfg.reprompt_after_minutes == 99
+                 json={"defaults": {"min_duration_seconds": 99}})
+    assert cfg.min_duration_seconds == 99
     assert client.delete("/api/config/reasons", headers=_hdr()).status_code == 200
-    assert cfg.reprompt_after_minutes == original
+    assert cfg.min_duration_seconds == original
 
 
 def test_merge_patch_null_deletes_and_lists_replace(cfg):

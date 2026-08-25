@@ -101,7 +101,7 @@ def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
     # resolves to today, not to a number pinned from a roster since replaced.
     from app.core import routing
     ask_role = cfg.unknown_ladder[0]["notify"]
-    expected = {r.address for r in routing.resolve(cfg, ask_role, for_prompt=True)}
+    expected = {r.address for r in routing.resolve(cfg, ask_role)}
     assert sent_to["recipient"] in expected, "prompt went to the on-duty asker"
 
     # Meta reports `from` without a '+'; routing.yaml stores it with one.
