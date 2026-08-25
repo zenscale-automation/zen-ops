@@ -1090,3 +1090,50 @@ def clear_offplan(asset_ref: str):
     with db.transaction() as c:
         n = offplan.clear(c, aid)
     return jsonify({"ok": True, "asset_ref": asset_ref, "was_off_plan": bool(n)})
+
+
+@bp.put("/api/admin/pilot-mode")
+def set_pilot_mode():
+    """Turn pilot mode on or off.
+
+    Previously the dashboard reached PATCH /api/config/routing directly for this — the
+    single most consequential state transition in the product, skipping every guard in
+    this module and landing in the audit log as an anonymous raw patch. It is also a
+    one-way door in the UI once off, because the panel that offers it disappears.
+
+    Turning it OFF is the moment per-team routing starts deciding who gets woken, so it
+    is refused unless the roster can actually carry that: every team a fault routes to
+    must have somebody on every shift, and nobody may still be a sample contact.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    body = request.get_json(silent=True) or {}
+    if "enabled" not in body:
+        return _err(400, "enabled must be true or false")
+    enabled = bool(body["enabled"])
+    cfg = _cfg()
+
+    if not enabled:
+        targeted = _targeted_teams(cfg)
+        unstaffed = {t: _empty_shifts(_roster_of(cfg, t))
+                     for t in sorted(targeted) if _empty_shifts(_roster_of(cfg, t))}
+        if unstaffed:
+            return _err(409,
+                        "turning pilot mode off would start routing by team, and some "
+                        "teams have shifts with nobody on them",
+                        unstaffed=unstaffed,
+                        hint="staff every shift for these teams first — one person may "
+                             "cover two teams")
+        samples = sorted(pid for pid, p in (cfg.people or {}).items()
+                         if p.get("placeholder") and any(
+                             pid in (b or []) for s in (cfg.roles or {}).values()
+                             for b in (s or {}).values()))
+        if samples:
+            return _err(409, "some rostered people are still sample contacts with "
+                             "invented numbers",
+                        placeholders=samples,
+                        hint="replace their numbers with real ones first")
+
+    return _apply("routing", {"route_all_to_default": enabled}, _actor(),
+                  {"updated": "pilot_mode", "enabled": enabled})

@@ -10,16 +10,21 @@
     --page:#f9f9f7; --surface:#fcfcfb; --text:#0b0b0b; --text-2:#52514e; --muted:#898781;
     --grid:#e1e0d9; --border:rgba(11,11,11,0.10); --raised:#f2f1ec;
     --series:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+    /* Semantic pair with real contrast — the raw --warning is a 1.8:1 fill colour and
+       was being used for text that decides whether the plant goes live. */
+    --warn-ink:#7a4a00; --warn-bg:#fdf1d6;
     color-scheme:light;
   }
   @media (prefers-color-scheme:dark){ :root:where(:not([data-theme="light"])){
     --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
-    --series:#3987e5; color-scheme:dark; } }
+    --series:#3987e5; --good:#3ec13e; --warning:#f0b542; --critical:#f06a6a;
+    --warn-ink:#f0c987; --warn-bg:#3a2d10; color-scheme:dark; } }
   :root[data-theme="dark"]{
     --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
-    --series:#3987e5; color-scheme:dark; }
+    --series:#3987e5; --good:#3ec13e; --warning:#f0b542; --critical:#f06a6a;
+    --warn-ink:#f0c987; --warn-bg:#3a2d10; color-scheme:dark; }
 
   *{box-sizing:border-box}
   body{margin:0;background:var(--page);color:var(--text);
@@ -97,8 +102,10 @@
   .chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;
     background:var(--raised);border:1px solid var(--border);border-radius:999px;
     padding:3px 5px 3px 11px}
-  .chip .ph{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;
-    color:var(--warning)}
+  /* This flag is what stops the system going live against invented numbers, so it has
+     to be legible rather than decorative. */
+  .chip .ph{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+    color:var(--warn-ink);background:var(--warn-bg);border-radius:4px;padding:1px 5px}
   .chip .x{border:none;background:none;color:var(--muted);cursor:pointer;
     font-size:15px;line-height:1;padding:0 4px;border-radius:50%}
   .chip .x:hover{color:var(--critical);background:var(--page)}
@@ -132,6 +139,8 @@
   .banner.bad{border-color:var(--critical);color:var(--critical)}
   .banner.warn{border-color:var(--warning)}
   .hidden{display:none}
+  body.busy{cursor:progress}
+  body.busy button,body.busy select,body.busy input{opacity:.6}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -270,10 +279,14 @@
 <script>
 "use strict";
 
+// Caddy serves this under /ops, so root-absolute paths 404 behind the proxy while
+// working perfectly on localhost — the classic "works on my machine" deployment break.
+const BASE = location.pathname.replace(/\/admin\/?$/, "");
 const $ = s => document.querySelector(s);
 const el = (t, c, txt) => { const n = document.createElement(t);
   if (c) n.className = c; if (txt != null) n.textContent = txt; return n; };
 
+const INFLIGHT = new Set();
 let STATE = null;      // last /api/admin/overview payload
 let LAST = null;       // last request, for copy-as-curl
 
@@ -294,16 +307,23 @@ async function api(method, path, body) {
     headers["X-Admin-Key"] = keyOf();
     headers["X-Admin-User"] = "admin-demo";
   }
+  // Two clicks on a chip's × produced two DELETEs, the second 404ing about an action
+  // that had just succeeded; two rapid adds raced the read-modify-write on the server.
+  if (INFLIGHT.has(method + path)) return { ok: false, status: 0, payload: {} };
+  INFLIGHT.add(method + path);
+  document.body.classList.add("busy");
   const started = performance.now();
   let res, payload, status = 0;
   try {
-    res = await fetch(path, { method, headers,
+    res = await fetch(BASE + path, { method, headers,
       body: body === undefined ? undefined : JSON.stringify(body) });
     status = res.status;
     payload = await res.json().catch(() => ({}));
   } catch (e) {
     payload = { error: String(e) };
   }
+  INFLIGHT.delete(method + path);
+  if (!INFLIGHT.size) document.body.classList.remove("busy");
   const ms = Math.round(performance.now() - started);
   LAST = { method, path, body, headers, status };
   logCall({ method, path, body, status, ms, payload });
@@ -330,7 +350,7 @@ function logCall(c) {
 
 function asCurl(c) {
   if (!c) return "";
-  const bits = ["curl -X " + c.method, "'" + location.origin + c.path + "'"];
+  const bits = ["curl -X " + c.method, "'" + location.origin + BASE + c.path + "'"];
   if (c.method !== "GET") {
     bits.push("-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'");
     bits.push("-H 'X-Admin-User: <who>'");
@@ -344,10 +364,21 @@ function asCurl(c) {
 
 /* ------------------------------------------------------------------- feedback */
 
+// Errors persist until dismissed. A nine-second timer on a message explaining WHY a
+// change was refused throws away the only instruction the operator was given.
 function banner(kind, text) {
-  const b = el("div", "banner " + kind, text);
+  const b = el("div", "banner " + kind);
+  b.append(el("strong", null, kind === "bad" ? "Refused. " : "Done. "));
+  b.append(document.createTextNode(text));
+  if (kind === "bad") {
+    const x = el("button", "sm", "Dismiss");
+    x.style.marginLeft = "10px";
+    x.onclick = () => b.remove();
+    b.append(x);
+  } else {
+    setTimeout(() => b.remove(), 6000);
+  }
   $("#banners").prepend(b);
-  setTimeout(() => b.remove(), 9000);
 }
 
 function handle(r, okMsg) {
@@ -359,7 +390,18 @@ function handle(r, okMsg) {
   if (p.empty_shifts) msg += " — shift " + p.empty_shifts.join(", ") + " would have nobody";
   if (p.rostered_in)  msg += " — on: " + p.rostered_in.join(", ");
   if (p.unknown)      msg += " — unknown: " + p.unknown.join(", ");
+  if (p.unstaffed)    msg += " — " + Object.entries(p.unstaffed)
+                                .map(([t, sh]) => t + " (" + sh.join(",") + ")").join(", ");
+  if (p.placeholders) msg += " — " + p.placeholders.join(", ");
+  // The API writes a plain-English recovery instruction for most refusals and the page
+  // was discarding it — including the exact answer to "somebody has left, now what".
+  if (p.detail)       msg += " — " + p.detail;
+  if (p.hint)         msg += ". " + p.hint;
   banner("bad", msg);
+  // 2. A rejected change must not stay on screen looking accepted. Controls that commit
+  // on `change` leave the new value displayed after a 409, and the page then confidently
+  // shows something the server rejected.
+  render();
   return false;
 }
 
@@ -370,6 +412,14 @@ const describeUse = u => [
 
 /* ---------------------------------------------------------------------- render */
 
+// Re-draw everything from the last server payload, without refetching. The failure path
+// needs this: a rejected change must not stay on screen looking accepted.
+function render() {
+  if (!STATE) return;
+  renderPilot(); renderPlans(); renderTeams(); renderPeople();
+  renderReasons(); renderSimOptions();
+}
+
 async function load() {
   if (!keyOf()) {
     $("#banners").innerHTML = "";
@@ -377,11 +427,13 @@ async function load() {
     b.append(el("strong", null, "Admin key needed. "));
     b.append(document.createTextNode(
       "Everything here — including staff phone numbers — is behind the key. " +
-      "Paste it in the field at the top right. On the server it is OPS_ADMIN_API_KEY in .env."));
+      "Paste it into the box at the top right. If you do not have it, ask whoever set " +
+      "up this system."));
     $("#banners").append(b);
     $("#sub").textContent = "locked";
     return;
   }
+  $("#banners").innerHTML = "";   // otherwise the "key needed" warning is pinned forever
   const r = await api("GET", "/api/admin/overview");
   if (!r.ok) {
     banner("bad", r.status === 403 ? "that key was rejected" : "could not load config");
@@ -396,9 +448,11 @@ async function load() {
   $("#shadowDot").className = "dot " + (shadow ? "warn" : "ok");
   $("#shadowTxt").textContent = shadow ? "shadow mode — nothing sends" : "live";
 
-  renderPilot();
-  renderPlans(); renderTeams(); renderPeople(); renderReasons(); renderSimOptions();
+  render();
   loadShifts(); loadSettings();
+  // Re-run rather than leaving the previous answer on screen: "who gets called right
+  // now" showing the pre-change answer is worse than showing nothing.
+  if ($("#sim").childElementCount) runSim();
 
   const unrouted = STATE.teams.filter(t => t.targeted && t.empty_shifts.length);
   if (unrouted.length) {
@@ -416,25 +470,36 @@ async function load() {
 // While route_all_to_default is on, everything on this page is stored and inert. Saying
 // so once, permanently, at the top is the difference between a tool people trust and one
 // they quietly stop believing.
+// Always rendered, both ways. Hiding the panel once pilot mode was off made the most
+// consequential switch in the product a one-way door with no indication it existed.
+// It also used to PATCH the raw config API directly, skipping every guard in admin_api
+// and landing in the audit log as an anonymous raw patch.
 function renderPilot() {
   const box = $("#pilot");
   box.innerHTML = "";
-  const p = STATE.pilot_mode;
-  if (!p || !p.route_all_to_default) return;
+  const p = STATE.pilot_mode || {};
+  const on = !!p.route_all_to_default;
+  const who = p.default_owner_name || p.default_owner || "the default owner";
 
-  const b = el("div", "banner warn");
-  b.append(el("strong", null, "Pilot mode is on. "));
-  b.append(document.createTextNode(
-    "Every notification goes to " + (p.default_owner_name || p.default_owner) +
-    " regardless of which team owns the fault. Changes below are saved, but will not " +
-    "change who gets called until this is turned off."));
-  const btn = el("button", "sm", "Turn off pilot mode");
+  const b = el("div", "banner " + (on ? "warn" : ""));
+  b.append(el("strong", null, on ? "One person is getting everything. "
+                                 : "Faults route to their own teams. "));
+  b.append(document.createTextNode(on
+    ? "Every notification goes to " + who + " whichever team owns the fault. Changes "
+      + "below are saved, but will not change who is called until this is switched off."
+    : "Each fault type goes to the team that owns it, using the roster below."));
+
+  const btn = el("button", "sm", on ? "Route by team instead" : "Send everything to " + who);
   btn.style.marginLeft = "10px";
   btn.onclick = async () => {
-    if (!confirm("Turn off pilot mode? Faults will start routing to their own teams " +
-                 "using the roster below.")) return;
-    handle(await api("PATCH", "/api/config/routing", { route_all_to_default: false }),
-           "Pilot mode off — faults now route by team");
+    const msg = on
+      ? "Route faults to their own teams from now on?\n\nThe roster below decides who "
+        + "is called."
+      : "Send every notification to " + who + " from now on, whichever team owns the "
+        + "fault?";
+    if (!confirm(msg)) return;
+    handle(await api("PUT", "/api/admin/pilot-mode", { enabled: !on }),
+           on ? "Now routing by team" : "Everything now goes to " + who);
   };
   b.append(btn);
   box.append(b);
@@ -448,20 +513,38 @@ function renderPlans() {
   const sel = $("#planSel");
   const keep = sel.value;
   sel.innerHTML = "";
-  STATE.plans.forEach(p => sel.append(new Option(p.id, p.id)));
+  // The payload already carries a human sentence; showing the internal key
+  // ("no_reason_yet", "weaving.electrical") made the operator read engine vocabulary.
+  STATE.plans.forEach(p => sel.append(new Option(p.applies_to || p.id, p.id)));
   sel.value = STATE.plans.some(p => p.id === keep) ? keep : STATE.plans[0].id;
   loadPlanDraft();
 }
 
 function currentPlan() { return STATE.plans.find(p => p.id === $("#planSel").value); }
 
-function loadPlanDraft() {
+function loadPlanDraft(force) {
   const p = currentPlan();
   if (!p) return;
+  // Adding somebody to a shift used to wipe a half-edited plan, because every successful
+  // mutation calls load(). Keep the draft and say so.
+  if (!force && planDirty) {
+    banner("", "Your unsaved plan changes were kept — save or reload to discard them.");
+    return;
+  }
   $("#planApplies").textContent = "applies to: " + p.applies_to;
   planDraft = p.steps.map(s => ({ notify: s.notify, wait_minutes: s.wait_minutes,
                                   action: s.action || null }));
   renderSteps();
+}
+
+// Updates only the running totals, leaving the DOM (and focus) alone.
+function recomputeAbsolutes() {
+  let running = 0;
+  $("#steps").querySelectorAll(".step").forEach((row, i) => {
+    running += Number(planDraft[i] && planDraft[i].wait_minutes) || 0;
+    const span = row.querySelector(".running");
+    if (span) span.textContent = "= " + running + " min in";
+  });
 }
 
 function renderSteps() {
@@ -477,7 +560,7 @@ function renderSteps() {
 
     const who = el("select");
     // "owner" is offered in the operator's words, not the engine's.
-    who.append(new Option("the team that owns this fault", "owner"));
+    who.append(new Option("whichever team owns this fault", "owner"));
     teams.forEach(t => who.append(new Option(t, t)));
     who.value = s.notify;
     who.onchange = () => { s.notify = who.value; markDirty(); };
@@ -485,14 +568,25 @@ function renderSteps() {
 
     const wrap = el("div", "row tight");
     const wait = el("input");
-    wait.type = "number"; wait.min = "0"; wait.style.width = "72px";
+    wait.type = "number"; wait.min = "0"; wait.max = "10080"; wait.style.width = "72px";
     wait.value = s.wait_minutes;
-    wait.oninput = () => { s.wait_minutes = Number(wait.value) || 0; renderSteps(); markDirty(); };
+    wait.setAttribute("aria-label", "minutes to wait before step " + (i + 1));
+    // NOT oninput -> renderSteps(): that rebuilds the list with innerHTML="" and destroys
+    // the very input being typed into, so "25" became "2" and Save looked armed. The
+    // running total is updated in place instead, and the full re-render waits for blur.
+    wait.oninput = () => {
+      s.wait_minutes = Number(wait.value) || 0;
+      recomputeAbsolutes();
+      markDirty();
+    };
+    wait.onchange = () => renderSteps();
+    wait.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); wait.blur(); } };
     wrap.append(wait, el("span", "abs", i === 0 ? "min, immediately" : "min later"));
     row.append(wrap);
 
     const right = el("div", "row tight");
-    right.append(el("span", "abs", "= " + running + " min in"));
+    const abs = el("span", "abs running", "= " + running + " min in");
+    right.append(abs);
     if (s.action === "ask_reason") right.append(el("span", "tag", "asks the reason"));
     const del = el("button", "sm danger", "Remove");
     del.onclick = () => { planDraft.splice(i, 1); renderSteps(); markDirty(); };
@@ -504,7 +598,8 @@ function renderSteps() {
   if (!planDraft.length) box.append(el("div", "empty", "No steps — nobody would be called."));
 }
 
-function markDirty() { $("#savePlan").disabled = !keyOf(); }
+let planDirty = false;
+function markDirty() { planDirty = true; $("#savePlan").disabled = !keyOf(); }
 
 /* teams ------------------------------------------------------------------- */
 
@@ -557,10 +652,16 @@ function renderTeams() {
         chip.append(document.createTextNode(person ? person.name : pid));
         if (person && person.placeholder) chip.append(el("span", "ph", "sample"));
         const x = el("button", "x", "×");
-        x.title = "Take off this shift";
+        const who = person ? person.name : pid;
+        x.title = "Take " + who + " off this shift";
+        x.setAttribute("aria-label", "Take " + who + " off shift " + k + " of " + t.id);
+        // Confirmed, like Delete team and Remove person. The server only refuses the LAST
+        // person on a TARGETED shift, so on any other shift this just happens — and the
+        // page was inconsistent about which destructions deserve a question.
         x.onclick = async () => {
+          if (!confirm("Take " + who + " off " + t.id + ", shift " + k + "?")) return;
           handle(await api("DELETE", "/api/admin/roster/" + t.id + "/" + k + "/" + pid),
-                 (person ? person.name : pid) + " taken off " + t.id);
+                 who + " taken off " + t.id);
         };
         chip.append(x);
         list.append(chip);
@@ -609,6 +710,9 @@ function showNewPerson(team, shift, wrap) {
   const name = el("input"); name.placeholder = "Name"; name.style.width = "112px";
   const phone = el("input"); phone.placeholder = "+91…"; phone.style.width = "124px";
   const go = el("button", "sm primary", "Add");
+  const submitOnEnter = (e) => { if (e.key === "Enter") { e.preventDefault(); go.click(); } };
+  name.onkeydown = submitOnEnter;
+  phone.onkeydown = submitOnEnter;
   go.onclick = async () => {
     if (!name.value.trim()) { name.focus(); return; }
     handle(await api("POST", "/api/admin/roster/" + team.id + "/" + shift,
@@ -644,10 +748,22 @@ function renderPeople() {
     phone.value = p.whatsapp || "";
     phone.placeholder = "+91…";
     phone.style.width = "150px";
+    // Commits on change, which is fine, but it must ask first: this is somebody's
+    // pager number and an accidental edit is a person who stops being reachable.
     phone.onchange = async () => {
-      handle(await api("PATCH", "/api/admin/people/" + p.id, { whatsapp: phone.value.trim() }),
+      const next = phone.value.trim();
+      if (next === (p.whatsapp || "")) return;
+      if (!next) {
+        banner("bad", "A number cannot be cleared here — to remove somebody, take them "
+                      + "off every shift and then delete them.");
+        render();
+        return;
+      }
+      if (!confirm("Change " + p.name + "'s number to " + next + "?")) { render(); return; }
+      handle(await api("PATCH", "/api/admin/people/" + p.id, { whatsapp: next }),
              "Updated " + p.name);
     };
+    phone.onkeydown = (e) => { if (e.key === "Enter") phone.blur(); };
     phoneCell.append(phone);
     tr.append(phoneCell);
 
@@ -690,7 +806,11 @@ function renderReasons() {
       const sel = el("select");
       STATE.teams.forEach(t => sel.append(new Option(t.id, t.id)));
       sel.value = r.owner || "";
+      sel.setAttribute("aria-label", "team responsible for " + r.label);
       sel.onchange = async () => {
+        if (!confirm("Send " + r.label + " to " + sel.value + " from now on?")) {
+          render(); return;
+        }
         handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
                          { owner: sel.value }), "Reassigned " + r.label);
       };
@@ -797,8 +917,13 @@ async function runSim() {
   if (!r.ok) { box.append(el("div", "empty", "simulation failed")); return; }
   const d = r.payload;
 
-  box.append(el("div", "cap", "shift " + (d.shift || "?") + " · plan: " + d.plan +
-    (d.shadow_mode ? " · shadow mode, nothing would actually send" : "")));
+  const notes = ["shift " + (d.shift || "?")];
+  if (d.shadow_mode) notes.push("shadow mode — nothing would actually send");
+  if (d.pilot_mode && d.pilot_mode.route_all_to_default)
+    notes.push("pilot mode — everything goes to " +
+               (d.pilot_mode.default_owner_name || d.pilot_mode.default_owner) +
+               " whatever the roster says");
+  box.append(el("div", "cap", notes.join(" · ")));
 
   const table = el("table");
   const head = el("tr");
