@@ -36,32 +36,38 @@ def test_clearing_placeholder_survives_composition(cfg):
     """The go-live gate depends on this. Replacing a sample contact sets
     placeholder:None; if that null is dropped, validate() refuses live mode forever and
     the admin UI cannot do the one job it exists for."""
+    base = {"people": {"temp_p": {"name": "T", "whatsapp": "+919000000099",
+                                  "placeholder": True}}}
     composed = config.compose_patch(
-        {}, {"people": {"ravi_k": {"whatsapp": "+919812345678", "placeholder": None}}})
-    person = config.merge_patch(cfg.routing, composed)["people"]["ravi_k"]
+        {}, {"people": {"temp_p": {"whatsapp": "+919812345678", "placeholder": None}}})
+    person = config.merge_patch(base, composed)["people"]["temp_p"]
     assert person["whatsapp"] == "+919812345678"
     assert "placeholder" not in person, "the placeholder flag must actually clear"
 
 
 # --- a split roster replaces the 24/7 bucket -----------------------------------
 
-def test_splitting_an_all_shift_team_replaces_it(cfg):
+def test_splitting_an_all_shift_team_replaces_it():
     """roles.<team> is a dict, so merge_patch recurses and only the per-shift lists
     replace — a leftover `all` survives, and role_person_ids checks `all` FIRST. Splitting
     a 24/7 team into named shifts returned 200, echoed the new roster, and changed
-    nothing about who was paged."""
-    assert "all" in cfg.roles["shift_incharge"], "fixture assumption"
+    nothing about who was paged.
 
-    naive = config.merge_patch(cfg.routing, {"roles": {"shift_incharge": {
-        "A": ["amarjit_s"], "B": ["gurmeet_s"], "C": ["balwinder_s"]}}})
-    assert "all" in naive["roles"]["shift_incharge"], \
+    Built on a constructed roster rather than the shipped one, so the property stays
+    tested whatever the current config happens to contain."""
+    base = {"roles": {"night_team": {"all": ["old_hand"]}},
+            "people": {"old_hand": {}, "a1": {}, "b1": {}, "c1": {}}}
+
+    naive = config.merge_patch(base, {"roles": {"night_team": {
+        "A": ["a1"], "B": ["b1"], "C": ["c1"]}}})
+    assert "all" in naive["roles"]["night_team"], \
         "without a tombstone the 24/7 bucket survives — this is the bug"
 
-    with_tombstone = config.merge_patch(cfg.routing, {"roles": {"shift_incharge": {
-        "A": ["amarjit_s"], "B": ["gurmeet_s"], "C": ["balwinder_s"], "all": None}}})
-    spec = with_tombstone["roles"]["shift_incharge"]
+    with_tombstone = config.merge_patch(base, {"roles": {"night_team": {
+        "A": ["a1"], "B": ["b1"], "C": ["c1"], "all": None}}})
+    spec = with_tombstone["roles"]["night_team"]
     assert "all" not in spec
-    assert spec["B"] == ["gurmeet_s"]
+    assert spec["B"] == ["b1"]
 
 
 # --- nobody may lose their only contact channel --------------------------------
@@ -70,10 +76,10 @@ def test_a_person_with_no_channel_is_refused(cfg):
     """A person with no channel still resolves to a Recipient, so the default_owner
     backstop never fires — but their channel is 'log'. Pages go to a file, the outbox
     says sent, the event log says notified."""
-    broken = config.candidate(cfg, {"routing": {"people": {"ravi_k": {"whatsapp": None}}}})
+    broken = config.candidate(cfg, {"routing": {"people": {"shailendra": {"whatsapp": None}}}})
     with pytest.raises(config.ConfigError) as e:
         config.validate(broken)
-    assert "ravi_k" in str(e.value)
+    assert "shailendra" in str(e.value)
 
 
 def test_default_owner_must_exist_and_be_reachable(cfg):
@@ -86,7 +92,7 @@ def test_default_owner_must_exist_and_be_reachable(cfg):
 def test_a_team_may_not_be_called_owner(cfg):
     """`owner` is reserved — ladders use it to mean the reason's own team, so a real
     team by that name captures every rung in every ladder."""
-    bad = config.candidate(cfg, {"routing": {"roles": {"owner": {"all": ["ravi_k"]}}}})
+    bad = config.candidate(cfg, {"routing": {"roles": {"owner": {"all": ["shailendra"]}}}})
     with pytest.raises(config.ConfigError) as e:
         config.validate(bad)
     assert "reserved" in str(e.value)

@@ -208,7 +208,6 @@
 
       <section>
         <h2>Who gets called</h2>
-        <div id="routingMode"></div>
         <div id="teams"></div>
         <div class="row" style="margin-top:12px">
           <input id="newTeam" placeholder="New team, for example Engineering" style="flex:1">
@@ -451,7 +450,7 @@ async function refreshSim() {
 function render() {
   if (!STATE) return;
   renderHeader(); renderHeadline(); renderFacts(); renderNextSteps();
-  renderAssets(); renderRoutingMode(); renderTeams(); renderPeople();
+  renderAssets(); renderTeams(); renderPeople();
   renderPlans(); renderReasons();
 }
 
@@ -470,36 +469,38 @@ function renderHeader() {
 function renderHeadline() {
   var box = $("#headline");
   box.innerHTML = "";
-  var p = STATE.pilot_mode || {};
-  var on = !!p.route_all_to_default;
-  var owner = STATE.people.filter(function (x) { return x.id === p.default_owner; })[0];
+  // Derived from the routing itself, not from a mode: name who a fault reaches today.
+  // With one person on the roster that is one name; as the roster grows this becomes
+  // a summary and the teams below carry the detail.
+  var rostered = {};
+  STATE.teams.forEach(function (t) {
+    Object.keys(t.roster).forEach(function (k) {
+      (t.roster[k] || []).forEach(function (pid) { rostered[pid] = true; });
+    });
+  });
+  var names = STATE.people
+    .filter(function (p) { return rostered[p.id]; })
+    .map(function (p) { return p.name; });
 
   var who = el("div", "who");
-  if (on) {
-    who.append(el("div", "lead",
-      "Every fault goes to " + (owner ? owner.name : p.default_owner)));
+  if (names.length === 1) {
+    var only = STATE.people.filter(function (p) { return rostered[p.id]; })[0];
+    who.append(el("div", "lead", "Every fault reaches " + only.name));
     var num = el("div", "num");
     num.append(document.createTextNode("on WhatsApp at "));
-    num.append(el("span", "mono", (owner && owner.whatsapp) || "no number set"));
-    num.append(document.createTextNode(", whichever team owns it."));
+    num.append(el("span", "mono", only.whatsapp || "no number set"));
+    num.append(document.createTextNode(" — the only person on the roster."));
     who.append(num);
+  } else if (names.length) {
+    who.append(el("div", "lead", "Faults route to the team that handles them"));
+    who.append(el("div", "num", names.length + " people on the roster: "
+      + names.slice(0, 4).join(", ") + (names.length > 4 ? " and others" : "")));
   } else {
-    who.append(el("div", "lead", "Each fault goes to the team that handles it"));
-    who.append(el("div", "num", "Using the shift roster below."));
+    who.append(el("div", "lead", "Nobody is on the roster"));
+    who.append(el("div", "num", "Faults fall back to "
+      + (STATE.backstop || "no one") + ". Add people to the teams below."));
   }
   box.append(who);
-
-  var btn = el("button", on ? "" : "primary",
-    on ? "Route by team instead" : "Send everything to one person");
-  btn.onclick = async function () {
-    var msg = on
-      ? "Route faults to their own teams from now on? The roster below will decide who is called."
-      : "Send every fault to " + (owner ? owner.name : p.default_owner) + " from now on?";
-    if (!confirm(msg)) return;
-    handle(await api("PUT", "/api/admin/pilot-mode", { enabled: !on }),
-      on ? "Now routing by team" : "Everything now goes to one person");
-  };
-  box.append(btn);
 }
 
 function renderFacts() {
@@ -583,9 +584,7 @@ function renderNextSteps() {
   });
   t.append(tb);
   d.append(t);
-  d.append(el("div", "cap", "Shift " + (SIM.shift || "?")
-    + (SIM.pilot_mode && SIM.pilot_mode.route_all_to_default
-       ? ", and everything goes to one person whatever the roster says" : "")));
+  d.append(el("div", "cap", "Shift " + (SIM.shift || "?")));
   box.append(d);
 }
 
@@ -671,18 +670,6 @@ function offplanForm(cell, asset) {
 }
 
 /* -------------------------------------------------------- 3. who is called */
-
-function renderRoutingMode() {
-  var box = $("#routingMode");
-  box.innerHTML = "";
-  if (!(STATE.pilot_mode || {}).route_all_to_default) return;
-  var p = el("p", "cap");
-  p.append(el("strong", null, "These teams are not being used right now. "));
-  p.append(document.createTextNode(
-    "Everything goes to one person until you switch to routing by team, above. Set the "
-    + "roster up here first: the switch is refused while any shift has nobody on it."));
-  box.append(p);
-}
 
 function renderTeams() {
   var box = $("#teams");
@@ -803,15 +790,16 @@ function renderPeople() {
   ["Name", "WhatsApp", "On teams", ""].forEach(function (h) { head.append(el("th", null, h)); });
   thead.append(head); t.append(thead);
   var tb = el("tbody");
-  var pilotOwner = (STATE.pilot_mode || {}).default_owner;
+  var backstop = STATE.backstop;
 
   STATE.people.forEach(function (p) {
     var tr = el("tr");
     var n = el("td");
     n.append(document.createTextNode(p.name));
-    if (p.id === pilotOwner) {
+    if (p.id === backstop) {
       n.append(document.createTextNode(" "));
-      n.append(el("span", "tag good", "gets everything"));
+      n.append(el("span", "tag good", "backstop"));
+      n.title = "Anything that cannot be routed falls back to them";
     }
     if (p.placeholder) {
       n.append(document.createTextNode(" "));
@@ -845,9 +833,9 @@ function renderPeople() {
     var act = el("td");
     act.style.textAlign = "right";
     var del = el("button", "sm danger", "Remove");
-    del.disabled = p.rostered_in.length > 0 || p.id === pilotOwner;
+    del.disabled = p.rostered_in.length > 0 || p.id === backstop;
     del.title = del.disabled
-      ? (p.id === pilotOwner ? "everything routes to them" : "still on a roster")
+      ? (p.id === backstop ? "unroutable faults fall back to them" : "still on a roster")
       : "";
     del.onclick = async function () {
       if (!confirm("Remove " + p.name + " from the directory?")) return;

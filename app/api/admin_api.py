@@ -164,28 +164,6 @@ def _targeted_teams(cfg) -> set:
     return {r for r in out if r}
 
 
-def _pilot_mode(cfg) -> dict:
-    """route_all_to_default sends EVERY page to one person regardless of which team owns
-    the fault. It is the right setting before a real roster exists — one accountable
-    person is honest, per-role routing into invented names is not — but while it is on,
-    every team and roster edit made here is STORED AND INERT. An admin screen that lets
-    someone rewire the call-out chain and shows no sign that nothing will change is worse
-    than one that refuses the edit, so this is reported on every read."""
-    on = bool(cfg.route_all_to_default)
-    owner = cfg.routing.get("default_owner")
-    person = (cfg.people or {}).get(owner) or {}
-    return {
-        "route_all_to_default": on,
-        "default_owner": owner,
-        "default_owner_name": person.get("name", owner),
-        "explanation": (
-            "Pilot mode is ON: every notification goes to %s no matter which team owns "
-            "the fault. Team and roster changes are saved but will not change who is "
-            "called until pilot mode is turned off." % (person.get("name", owner) or "the default owner")
-        ) if on else None,
-    }
-
-
 def _roster_of(cfg, team: str) -> dict:
     spec = (cfg.roles or {}).get(team, {}) or {}
     if "all" in spec:
@@ -256,6 +234,9 @@ def overview():
     return jsonify({
         "version": cfg.version,
         "build": _build_id(),
+        # The person every unrouted notification falls back to. Not a mode — just the
+        # last line before a fault reaches nobody.
+        "backstop": cfg.routing.get("default_owner"),
         "department": cfg.department,
         "asset_type": cfg.asset_type,
         "shadow_mode": cfg.shadow_mode,
@@ -271,7 +252,6 @@ def overview():
             "ticketable": bool(c.get("ticketable")),
             "in_prompt": bool(c.get("show_in_prompt")),
         } for c in cfg.codes],
-        "pilot_mode": _pilot_mode(cfg),
         # So the roster grid can label each column with its actual hours. "Shift C" means
         # nothing to somebody deciding whether Ravi can cover it; "22:00-06:00" does.
         "shift_times": {k: (cfg.shifts or {}).get(k) for k in ("A", "B", "C")},
@@ -764,8 +744,7 @@ def simulate():
     for i, rung in enumerate(cfg.ladders.get(key, []) or []):
         after = int(rung.get("after_minutes", 0))
         people = routing.resolve(cfg, rung.get("notify"), when_iso=when,
-                                 owner_role=owner_role,
-                                 for_prompt=(rung.get("action") == "ask_reason"))
+                                 owner_role=owner_role)
         out.append({
             "step": i + 1,
             "notify": rung.get("notify"),
@@ -781,7 +760,6 @@ def simulate():
     return jsonify({
         "reason": code, "plan": BUILTIN_PLANS.get(key, key), "at": when, "shift": shift,
         "shadow_mode": cfg.shadow_mode,
-        "pilot_mode": _pilot_mode(cfg),
         "steps": out,
         "any_unrouted": any(s["unrouted"] for s in out),
     })
@@ -1115,48 +1093,3 @@ def clear_offplan(asset_ref: str):
     return jsonify({"ok": True, "asset_ref": asset_ref, "was_off_plan": bool(n)})
 
 
-@bp.put("/api/admin/pilot-mode")
-def set_pilot_mode():
-    """Turn pilot mode on or off.
-
-    Previously the dashboard reached PATCH /api/config/routing directly for this — the
-    single most consequential state transition in the product, skipping every guard in
-    this module and landing in the audit log as an anonymous raw patch. It is also a
-    one-way door in the UI once off, because the panel that offers it disappears.
-
-    Turning it OFF is the moment per-team routing starts deciding who gets woken, so it
-    is refused unless the roster can actually carry that: every team a fault routes to
-    must have somebody on every shift, and nobody may still be a sample contact.
-    """
-    ok, why = _authorised()
-    if not ok:
-        return _err(403, why)
-    body = request.get_json(silent=True) or {}
-    if "enabled" not in body:
-        return _err(400, "enabled must be true or false")
-    enabled = bool(body["enabled"])
-    cfg = _cfg()
-
-    if not enabled:
-        targeted = _targeted_teams(cfg)
-        unstaffed = {t: _empty_shifts(_roster_of(cfg, t))
-                     for t in sorted(targeted) if _empty_shifts(_roster_of(cfg, t))}
-        if unstaffed:
-            return _err(409,
-                        "turning pilot mode off would start routing by team, and some "
-                        "teams have shifts with nobody on them",
-                        unstaffed=unstaffed,
-                        hint="staff every shift for these teams first — one person may "
-                             "cover two teams")
-        samples = sorted(pid for pid, p in (cfg.people or {}).items()
-                         if p.get("placeholder") and any(
-                             pid in (b or []) for s in (cfg.roles or {}).values()
-                             for b in (s or {}).values()))
-        if samples:
-            return _err(409, "some rostered people are still sample contacts with "
-                             "invented numbers",
-                        placeholders=samples,
-                        hint="replace their numbers with real ones first")
-
-    return _apply("routing", {"route_all_to_default": enabled}, _actor(),
-                  {"updated": "pilot_mode", "enabled": enabled})

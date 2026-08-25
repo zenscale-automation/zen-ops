@@ -14,7 +14,7 @@ def test_reply_opens_ticket_then_resolves(cfg):
     inc = incidents.open_incident(cfg, "loom_5", "STOPPED")
     from app.core import classify
     classify.on_open(cfg, inc)
-    res = incidents.set_reason(cfg, inc["id"], "weaving.electrical", method="reply", actor="amarjit_s")
+    res = incidents.set_reason(cfg, inc["id"], "weaving.electrical", method="reply", actor="test")
     tid = res["ticket"]["id"]
 
     ticker.tick(cfg)  # page the owner
@@ -97,16 +97,21 @@ def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
     ticker.tick(cfg)
     outbox.drain(cfg)
     sent_to = db.query_one("SELECT recipient FROM outbox ORDER BY id DESC LIMIT 1")
-    assert sent_to["recipient"] == "+919000000005", "prompt went to the shift supervisor"
+    # Derive from config: the prompt goes to whoever the unknown ladder's first rung
+    # resolves to today, not to a number pinned from a roster since replaced.
+    from app.core import routing
+    ask_role = cfg.unknown_ladder[0]["notify"]
+    expected = {r.address for r in routing.resolve(cfg, ask_role, for_prompt=True)}
+    assert sent_to["recipient"] in expected, "prompt went to the on-duty asker"
 
     # Meta reports `from` without a '+'; routing.yaml stores it with one.
     resp = _meta_post(client, _meta_envelope("919000000005", "1"))
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["matched"] is True and data["code"] == "weaving.electrical"
-    # a ticket now exists for the electrician
+    # a ticket now exists, owned by whichever team the config assigns
     tkt = db.query_one("SELECT owner_role FROM tickets WHERE incident_id=?", (inc["id"],))
-    assert tkt["owner_role"] == "electrician"
+    assert tkt["owner_role"] == cfg.owner_role("weaving.electrical")
     # verbatim inbound was recorded and linked
     raw = db.query_one("SELECT matched_incident_id FROM inbound_raw ORDER BY id DESC LIMIT 1")
     assert raw["matched_incident_id"] == inc["id"]

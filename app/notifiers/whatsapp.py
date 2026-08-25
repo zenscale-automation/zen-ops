@@ -134,13 +134,21 @@ class WhatsAppNotifier:
         untrue, which is worse than failing.
         """
         if payload.get("type") == "reason_prompt":
+            # The gap travels IN THE PAYLOAD, computed by escalation.fire from the ladder
+            # that scheduled this prompt — one source for the timing and the promise.
+            # The fallback recomputes from the same ladder rather than consulting a
+            # second config key that could disagree with it.
             reprompt = payload.get("reprompt_minutes")
             if reprompt is None and self.cfg is not None:
-                reprompt = int(self.cfg.reprompt_after_minutes)
+                from ..core.escalation import _minutes_to_next_step
+                ladder = self.cfg.unknown_ladder
+                first_ask = next((i for i, r in enumerate(ladder)
+                                  if r.get("action") == "ask_reason"), 0)
+                reprompt = _minutes_to_next_step(ladder, first_ask)
             return self.prompt_template, [
                 self._asset_label(payload),          # {{1}} Weaving Loom 91
                 self._minutes_down(payload),         # {{2}} 17
-                str(reprompt if reprompt is not None else 15),   # {{3}} 15
+                str(int(reprompt or 0)),             # {{3}} 25
             ]
         return self.escalation_template, [
             self._asset_label(payload),              # {{1}} Weaving Loom 91

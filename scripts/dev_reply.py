@@ -4,7 +4,7 @@ Handy for demos and for documenting the webhook contract.
     python -m scripts.dev_reply loom_5 1                  # reply "1" for loom_5
     python -m scripts.dev_reply loom_5 1 +919000000005    # from a specific number
 
-Signs the body with WHATSAPP_WEBHOOK_SECRET (HMAC-SHA256) and sends X-Signature.
+Signs the body the way the webhook actually verifies it: X-Hub-Signature-256 with WHATSAPP_APP_SECRET. Unset means unsigned (dev).
 """
 
 import hashlib
@@ -27,12 +27,17 @@ def main():
         sys.exit(1)
     asset_ref, digit = sys.argv[1], sys.argv[2]
     sender = sys.argv[3] if len(sys.argv) > 3 else "+919000000005"
-    body = json.dumps({"from": sender, "text": digit, "asset_ref": asset_ref}).encode()
+    # The PickyAssist inbound shape — the one dialect the webhook actually parses now.
+    # The old flat {"from": ...} form is dead: it was the invented BSP-placeholder shape,
+    # and posting it exercised nothing but the ignore path.
+    body = json.dumps({"number": sender.lstrip("+"), "message-in": digit,
+                       "message_in_raw": digit, "direction": 0,
+                       "unique-id": "dev-" + digit}).encode()
 
-    secret = os.environ.get("WHATSAPP_WEBHOOK_SECRET", "")
+    secret = os.environ.get("WHATSAPP_APP_SECRET", "")
     headers = {"Content-Type": "application/json"}
     if secret:
-        headers["X-Signature"] = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
     resp = requests.post(f"{BASE}/webhook/whatsapp", data=body, headers=headers, timeout=10)
     print(resp.status_code, resp.text)

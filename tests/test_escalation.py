@@ -12,25 +12,31 @@ def _fired_roles(ticket_id):
         (ticket_id,))]
 
 
-def test_ladder_progresses_owner_supervisor_shiftincharge(cfg):
+def test_ladder_walks_every_configured_rung_in_order(cfg):
+    """Walks whatever ladder the config defines rather than pinning today's roles into
+    the suite — the ladder is meant to be tuned, and a test that hardcodes it makes
+    every tuning look like a regression."""
+    from datetime import timedelta
+
     inc = incidents.open_incident(cfg, "loom_5", "STOPPED")
-    res = incidents.set_reason(cfg, inc["id"], "weaving.electrical", method="reply", actor="amarjit_s")
+    res = incidents.set_reason(cfg, inc["id"], "weaving.electrical",
+                               method="reply", actor="test")
     tid = res["ticket"]["id"]
+    ladder = cfg.ladder_for("weaving.electrical")
 
-    ticker.tick(cfg)                      # rung 0 due immediately -> owner
-    assert _fired_roles(tid) == ["owner"]
+    expected = []
+    for rung in ladder:
+        clock.CLOCK.set_virtual(clock.parse(res["ticket"]["opened_at"])
+                                + timedelta(minutes=rung["after_minutes"] + 1))
+        ticker.tick(cfg)
+        expected.append(rung["notify"])
+        assert _fired_roles(tid) == expected
 
-    clock.CLOCK.advance(20 * 60)          # electrical rung 1 at +20m -> supervisor
-    ticker.tick(cfg)
-    assert _fired_roles(tid) == ["owner", "supervisor"]
-
-    clock.CLOCK.advance(25 * 60)          # rung 2 at +45m -> shift_incharge
-    ticker.tick(cfg)
-    assert _fired_roles(tid) == ["owner", "supervisor", "shift_incharge"]
-
-    # ladder exhausted: no more pending rungs
-    assert db.query_one(
-        "SELECT COUNT(*) n FROM escalations WHERE ticket_id=? AND status='pending'", (tid,))["n"] == 0
+    # Past the last rung: a repeating ladder keeps one rung pending, a finite one none.
+    pending = db.query_one(
+        "SELECT COUNT(*) n FROM escalations WHERE ticket_id=? AND status='pending'",
+        (tid,))["n"]
+    assert pending == (1 if ladder[-1].get("repeat_every_minutes") else 0)
 
 
 def test_first_notified_at_set_once(cfg):
@@ -85,4 +91,4 @@ def test_unknown_ladder_prompts_then_escalates(cfg):
         "SELECT action, notify_role FROM escalations WHERE incident_id=? AND status='fired' ORDER BY rung",
         (inc["id"],))
     assert [f["action"] for f in fired] == ["ask_reason", "ask_reason", None]
-    assert fired[-1]["notify_role"] == "shift_incharge"
+    assert fired[-1]["notify_role"] == cfg.unknown_ladder[-1]["notify"]

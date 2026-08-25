@@ -19,13 +19,6 @@ roles:
 # this config that reaches nobody.
 default_owner: shailendra
 
-# Deliberately OFF. When true, every notification goes to default_owner regardless of
-# which team owns the fault — which means the roster on screen decides nothing, and
-# somebody reading it is being shown something untrue. Routing by team with a roster of
-# one reaches exactly the same person, honestly, and starts working the moment a second
-# person is added.
-route_all_to_default: false
-
 people:
   shailendra: { name: Shailendra, whatsapp: "+918696099222" }
 

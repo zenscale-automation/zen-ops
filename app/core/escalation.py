@@ -206,8 +206,7 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     asset_ref = asset["asset_ref"] if asset else incident["asset_id"]
 
     recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
-                                 owner_role=owner_role,
-                                 for_prompt=(esc_row["action"] == "ask_reason"))
+                                 owner_role=owner_role)
     action = esc_row["action"]
 
     # Build the payload once; recipients differ only by address.

@@ -86,13 +86,9 @@ class Config:
     def min_duration_seconds(self) -> int:
         return int(self.defaults.get("min_duration_seconds", 120))
 
-    @property
-    def prompt_after_minutes(self) -> float:
-        return float(self.defaults.get("prompt_after_minutes", 15))
-
-    @property
-    def reprompt_after_minutes(self) -> float:
-        return float(self.defaults.get("reprompt_after_minutes", 15))
+    # prompt_after_minutes and reprompt_after_minutes were removed, not renamed. All
+    # timing comes from escalation.yaml's ladders — the thing that actually runs — and
+    # the message text quotes the ladder rather than a second key that could drift.
 
     @property
     def auto_classify(self) -> list[dict]:
@@ -169,12 +165,6 @@ class Config:
         the fault is silently unassigned — the exact defect the system exists to remove."""
         return self.routing.get("default_owner")
 
-    @property
-    def route_all_to_default(self) -> bool:
-        """Pilot switch: send EVERY notification to default_owner regardless of role,
-        for running before the real per-role roster exists."""
-        return bool(self.routing.get("route_all_to_default", False))
-
     def role_person_ids(self, role: str, shift: str | None) -> list[str]:
         spec = self.roles.get(role, {})
         if "all" in spec:
@@ -206,10 +196,6 @@ class Config:
     def recurrence(self) -> dict:
         return self.escalation.get("recurrence", {}) or {}
 
-    @property
-    def quiet_hours(self):
-        return self.escalation.get("quiet_hours")
-
     # source
     def source_setting(self, key: str, default=None):
         return (self.source.get("settings", {}) or {}).get(key, default)
@@ -220,8 +206,6 @@ class Config:
         env_name = self.source_setting("api_key_env", "LOOM_API_KEY")
         return _env(env_name)
 
-    # Kept so an existing adapter keeps working; prefer source_api_key().
-    loom_api_key = source_api_key
 
 
 def merge_patch(target, patch):
@@ -489,11 +473,6 @@ def validate(cfg: Config) -> None:
             f"routing.yaml: default_owner '{cfg.default_owner}' is not a person in "
             "routing.yaml"
         )
-    if cfg.route_all_to_default and not cfg.default_owner:
-        problems.append(
-            "routing.yaml: route_all_to_default is on but no default_owner is set"
-        )
-
     # Every person must keep a way to be reached. Without this, clearing a phone number
     # leaves a person who is still rostered, still resolves to a Recipient, and therefore
     # still satisfies the default_owner backstop at routing.py:52 — but whose channel is
@@ -526,9 +505,7 @@ def validate(cfg: Config) -> None:
         elif not (backstop.get("whatsapp") or backstop.get("gchat_space")):
             problems.append(
                 f"routing.yaml: default_owner '{owner_id}' has no contact channel")
-    elif cfg.route_all_to_default:
-        problems.append("routing.yaml: route_all_to_default is on but default_owner is "
-                        "not set — every notification would resolve to nobody")
+
 
     # shifts present
     if not cfg.shifts:

@@ -28,7 +28,7 @@ load_dotenv(ROOT / ".env")
 APP = "http://127.0.0.1:8000"
 MOCK = "http://127.0.0.1:8081"
 LOOM_KEY = os.environ.get("LOOM_API_KEY", "dev-loom-key-changeme")
-SECRET = os.environ.get("WHATSAPP_WEBHOOK_SECRET", "")
+SECRET = os.environ.get("WHATSAPP_APP_SECRET", "")
 
 procs: list[subprocess.Popen] = []
 
@@ -59,10 +59,15 @@ def _stop_loom(mid):
 
 
 def _reply(asset_ref, digit, sender="+919000000005"):
-    body = json.dumps({"from": sender, "text": digit, "asset_ref": asset_ref}).encode()
+    # The PickyAssist inbound shape — the one dialect the webhook actually parses now.
+    # The old flat {"from": ...} form is dead: it was the invented BSP-placeholder shape,
+    # and posting it exercised nothing but the ignore path.
+    body = json.dumps({"number": sender.lstrip("+"), "message-in": digit,
+                       "message_in_raw": digit, "direction": 0,
+                       "unique-id": "dev-" + digit}).encode()
     headers = {"Content-Type": "application/json"}
     if SECRET:
-        headers["X-Signature"] = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     r = requests.post(f"{APP}/webhook/whatsapp", data=body, headers=headers, timeout=5)
     print("   reply", asset_ref, "->", digit, ":", r.json())
 

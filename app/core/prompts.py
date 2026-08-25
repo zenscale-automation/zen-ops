@@ -34,11 +34,10 @@ def options(cfg: "config.Config") -> list[dict]:
             "n": n,
             "code": c["code"],
             "label": cfg.label(c["code"], "en"),
-            "label_hi": (c.get("label", {}) or {}).get("hi") if isinstance(c.get("label"), dict) else None,
         })
     # 'Other' always last
     n += 1
-    opts.append({"n": n, "code": cfg.other_code, "label": "Other", "label_hi": None})
+    opts.append({"n": n, "code": cfg.other_code, "label": "Other"})
     return opts
 
 
@@ -50,12 +49,10 @@ def render(cfg: "config.Config", asset_ref: str, opened_at_iso: str,
     lines = [f"{label} has been stopped for {minutes} minutes.", "", "Reply with the reason:"]
     for o in options(cfg):
         lines.append(f"  {o['n']}  {o['label']}")
-    # Passed in by the caller, computed from the ladder that will actually run. The
-    # fallback exists only so a direct call in a test still renders; nothing in the live
-    # path relies on it.
-    rep = reprompt_after_minutes if reprompt_after_minutes is not None \
-        else cfg.reprompt_after_minutes
-    rep = int(rep or 0)
+    # Computed by the caller from the ladder that will actually run — the single source
+    # for every timing. None means no follow-up is scheduled, and the message says so by
+    # promising nothing rather than inventing a number.
+    rep = int(reprompt_after_minutes or 0)
     if rep > 0:
         lines += ["", "We will notify the right person straight away. If there is no "
                       f"reply in {rep} minutes we will ask again."]

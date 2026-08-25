@@ -34,22 +34,12 @@ def _channel_for(person: dict, person_id: str) -> tuple[str, str]:
 
 
 def resolve(cfg: "config.Config", role: str, when_iso: str | None = None,
-            owner_role: str | None = None, for_prompt: bool = False) -> list[Recipient]:
-    """People to notify for a role at the shift in effect at `when_iso` (default now).
-
-    `for_prompt` marks the "why is this asset stopped?" question, which must always go
-    to whoever can actually see it. route_all_to_default deliberately does NOT apply to
-    prompts: sending the question to a manager who cannot see the shed floor would get
-    no useful answer, and the whole flow stalls waiting for one.
-    """
+            owner_role: str | None = None) -> list[Recipient]:
+    """People to notify for a role at the shift in effect at `when_iso` (default now)."""
     if role == "owner":
         role = owner_role or role
     when = clock.parse(when_iso) if when_iso else clock.now()
     shift = clock.resolve_shift(when, cfg.shifts)
-
-    if cfg.route_all_to_default and cfg.default_owner and not for_prompt:
-        # Pilot mode: one named person catches everything, whatever the reason says.
-        return _as_recipients(cfg, [cfg.default_owner])
 
     recipients = _as_recipients(cfg, cfg.role_person_ids(role, shift))
     if recipients:

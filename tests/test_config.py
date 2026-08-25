@@ -12,7 +12,9 @@ def test_valid_config_loads():
     c = config.load()
     assert c.department == "weaving"
     assert c.is_ticketable("weaving.electrical")
-    assert c.owner_role("weaving.electrical") == "electrician"
+    # The owning team is config, not a fact of nature — assert the RELATIONSHIP (the
+    # owner exists as a role) rather than pinning today's roster into the suite.
+    assert c.owner_role("weaving.electrical") in c.roles
 
 
 def test_bad_owner_role_fails_validation():
@@ -56,8 +58,9 @@ def test_shadow_mode_forces_every_channel_to_the_log_notifier(cfg):
     from app.notifiers import get_notifier, reset_cache
     from app.notifiers.log import LogNotifier
 
-    os.environ["WHATSAPP_BSP_BASE_URL"] = "https://bsp.example.com"
-    os.environ["WHATSAPP_BSP_TOKEN"] = "live-token"
+    # The real provider credentials, so the test proves shadow mode wins even when a
+    # live send is fully possible — not merely when it would have failed anyway.
+    os.environ["PICKYASSIST_TOKEN"] = "live-token"
     os.environ["GCHAT_WEBHOOK_BASE_URL"] = "https://chat.googleapis.com"
     try:
         cfg.shadow_mode = True
@@ -70,28 +73,32 @@ def test_shadow_mode_forces_every_channel_to_the_log_notifier(cfg):
         assert type(get_notifier(cfg, "whatsapp")).__name__ == "WhatsAppNotifier"
         assert type(get_notifier(cfg, "gchat")).__name__ == "GChatNotifier"
     finally:
-        for k in ("WHATSAPP_BSP_BASE_URL", "WHATSAPP_BSP_TOKEN", "GCHAT_WEBHOOK_BASE_URL"):
+        for k in ("PICKYASSIST_TOKEN", "GCHAT_WEBHOOK_BASE_URL"):
             os.environ.pop(k, None)
         cfg.shadow_mode = True
         reset_cache()
 
 
 def test_live_mode_with_a_placeholder_roster_refuses_to_start(cfg):
-    """The dummy numbers are validly-formatted Indian mobiles. Going live while they
-    are still in routing.yaml must be a boot failure, not a text to a stranger."""
-    import pytest
-    from app import config as appconfig
+    """The guard still exists even though the shipped roster no longer carries
+    placeholders — anyone re-adding a person with `placeholder: true` (a template, a
+    half-finished migration) must be stopped from going live against them. The invented
+    number used here is the same shape the old sample roster used."""
+    trial = config.candidate(cfg, {"routing": {"people": {"temp_p": {
+        "name": "Temp", "whatsapp": "+919000000099", "placeholder": True}},
+        "roles": {"engineering": {"all": ["shailendra", "temp_p"]}}}})
+    trial.shadow_mode = False
+    import os
+    os.environ.setdefault("PICKYASSIST_TOKEN", "x")   # isolate the placeholder check
+    try:
+        with pytest.raises(config.ConfigError) as exc:
+            config.validate(trial)
+        msg = str(exc.value)
+        assert "placeholder" in msg and "temp_p" in msg
+    finally:
+        if os.environ.get("PICKYASSIST_TOKEN") == "x":
+            del os.environ["PICKYASSIST_TOKEN"]
 
-    cfg.shadow_mode = False
-    with pytest.raises(appconfig.ConfigError) as exc:
-        appconfig.validate(cfg)
-    msg = str(exc.value)
-    assert "placeholder" in msg and "ravi_k" in msg
-    cfg.shadow_mode = True
-    appconfig.validate(cfg)          # shadow mode: same roster validates fine
-
-
-# --- migrations must survive a half-finished run -------------------------------
 
 def test_migrate_recovers_when_tables_exist_but_bookkeeping_is_missing(cfg):
     """MySQL commits each DDL statement implicitly, so a migration can never be atomic.
@@ -198,7 +205,7 @@ def test_patch_changes_config_without_a_restart(cfg, monkeypatch):
     r = client.patch("/api/config/escalation", headers=_hdr(),
                      json={"ladders": {"default": [
                          {"after_minutes": 0, "notify": "owner"},
-                         {"after_minutes": 5, "notify": "shift_incharge"}]}})
+                         {"after_minutes": 5, "notify": "engineering"}]}})
     assert r.status_code == 200
     assert cfg.version == before + 1
     assert cfg.ladder_for(None)[1]["after_minutes"] == 5, "live config changed in place"
@@ -266,7 +273,7 @@ def test_every_change_is_audited(cfg, monkeypatch):
     monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
     client = _client(cfg)
     client.patch("/api/config/routing", headers=_hdr(),
-                 json={"default_owner": "amarjit_s"})
+                 json={"default_owner": "shailendra"})
     ev = db.query_one("SELECT actor, kind, detail FROM events WHERE entity='config'"
                       " ORDER BY id DESC LIMIT 1")
     assert ev["kind"] == "config_changed" and ev["actor"] == "gurpreet"
