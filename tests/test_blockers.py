@@ -128,8 +128,8 @@ def test_an_offplan_loom_opens_no_incident(cfg):
     from app.core import poller
     from app.sources.base import IncidentOpened
 
-    aid = incidents.asset_id_for(cfg, "loom_7")
     with db.transaction() as c:
+        aid = incidents.ensure_asset(c, cfg, "loom_7")
         offplan.set_offplan(c, aid, "no_order",
                             until_at=clock.plus_seconds(3600), actor="test")
 
@@ -142,8 +142,8 @@ def test_an_offplan_loom_opens_no_incident(cfg):
 
 def test_offplan_expires_on_its_own(cfg):
     """until_at is mandatory precisely so a forgotten flag cannot hide a real fault."""
-    aid = incidents.asset_id_for(cfg, "loom_7")
     with db.transaction() as c:
+        aid = incidents.ensure_asset(c, cfg, "loom_7")
         offplan.set_offplan(c, aid, "maintenance",
                             until_at=clock.plus_seconds(600), actor="test")
     assert offplan.active(aid) is not None
