@@ -969,3 +969,123 @@ def set_settings():
         return _apply("escalation", escalation_patch, _actor(),
                       {"updated": "settings", **summary})
     return jsonify({"ok": True, "version": _cfg().version, "updated": "settings", **summary})
+
+
+# --------------------------------------------------------------------------- off plan
+
+@bp.get("/api/admin/assets")
+def list_assets():
+    """Every loom, and whether it is currently expected to be running.
+
+    The one thing nobody on the floor tracks today. Without it, "83% downtime" is two
+    different facts added together and neither can be acted on.
+    """
+    denied = _read_guard()
+    if denied:
+        return denied
+    from ..core import offplan
+
+    cfg = _cfg()
+    live = offplan.active_map()
+    rows = db.query(
+        "SELECT a.id, a.asset_ref, a.active,"
+        " (SELECT COUNT(*) FROM incidents i WHERE i.asset_id=a.id"
+        "   AND i.status IN ('open','resolving')) open_incidents"
+        " FROM assets a WHERE a.department=? ORDER BY a.asset_ref",
+        (cfg.department,),
+    )
+    out = []
+    for r in rows:
+        off = live.get(r["id"])
+        out.append({
+            "asset_ref": r["asset_ref"],
+            "in_service": bool(r["active"]),
+            "stopped_now": bool(r["open_incidents"]),
+            "off_plan": None if not off else {
+                "reason": off["reason"], "note": off["note"],
+                "until": off["until_at"], "set_by": off["set_by"],
+            },
+        })
+    return jsonify({"asset_type": cfg.asset_type, "assets": out,
+                    "reasons": list(offplan.REASONS)})
+
+
+@bp.put("/api/admin/assets/<asset_ref>/offplan")
+def set_offplan(asset_ref: str):
+    """Mark a loom as deliberately not in production until a given time.
+
+    Set once, covers hours — asking per incident would be the extra work this exists to
+    remove. `until` is required: a loom parked indefinitely is a genuine fault waiting to
+    be missed, so the flag has to expire on its own.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    from ..core import incidents as inc_mod, offplan
+
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+    reason = (body.get("reason") or "").strip()
+    if reason not in offplan.REASONS:
+        return _err(400, "unknown reason", got=reason, known=list(offplan.REASONS))
+    until = (body.get("until") or "").strip()
+    if not until:
+        return _err(400, "until is required",
+                    hint="a loom parked with no end date hides a real fault — give the "
+                         "time you expect it back, you can always extend it")
+    try:
+        until_dt = clock.parse(until)
+    except Exception:
+        return _err(400, "until must be an ISO timestamp", got=until[:40])
+    if until_dt <= clock.now():
+        return _err(400, "until is in the past", got=until)
+
+    try:
+        aid = inc_mod.asset_id_for(cfg, asset_ref)
+    except Exception:
+        return _err(404, "no such asset", asset_ref=asset_ref)
+
+    actor = _actor()
+    now = clock.now_iso()
+    closed = 0
+    with db.transaction() as c:
+        offplan.set_offplan(c, aid, reason, clock.to_iso(until_dt),
+                            note=(body.get("note") or None), actor=actor, at=now)
+        # Anything already open for this loom is planned downtime as of now, not a fault
+        # nobody attended. Leaving it open would keep escalating about a machine the
+        # operator has just told us is deliberately stopped.
+        rows = c.execute(
+            "SELECT id FROM incidents WHERE asset_id=? AND status IN ('open','resolving')",
+            (aid,),
+        ).fetchall()
+        for r in rows:
+            c.execute("UPDATE incidents SET status='resolved', resolved_at=?,"
+                      " duration_s=NULL WHERE id=?", (now, r["id"]))
+            c.execute("UPDATE escalations SET status='cancelled'"
+                      " WHERE status='pending' AND incident_id=?", (r["id"],))
+            events.log(c, "incident", r["id"], "resolved", actor=actor,
+                       detail={"close_reason": "off_plan", "offplan_reason": reason},
+                       department=cfg.department, at=now)
+            closed += 1
+
+    return jsonify({"ok": True, "asset_ref": asset_ref, "reason": reason,
+                    "until": clock.to_iso(until_dt),
+                    "incidents_closed_as_planned": closed})
+
+
+@bp.delete("/api/admin/assets/<asset_ref>/offplan")
+def clear_offplan(asset_ref: str):
+    """Back in production. The next stop is a fault again."""
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    from ..core import incidents as inc_mod, offplan
+
+    cfg = _cfg()
+    try:
+        aid = inc_mod.asset_id_for(cfg, asset_ref)
+    except Exception:
+        return _err(404, "no such asset", asset_ref=asset_ref)
+    with db.transaction() as c:
+        n = offplan.clear(c, aid)
+    return jsonify({"ok": True, "asset_ref": asset_ref, "was_off_plan": bool(n)})

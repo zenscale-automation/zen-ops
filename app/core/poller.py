@@ -11,6 +11,7 @@ from __future__ import annotations
 from .. import clock, config, db
 from ..sources.base import IncidentOpened, IncidentResolved
 from . import classify, incidents
+from . import offplan as offplan_mod
 
 
 def ensure_discovered_assets(cfg: "config.Config", source) -> int:
@@ -37,9 +38,21 @@ def apply_events(cfg: "config.Config", events: list) -> dict:
     independent of processing order.
     """
     new_incidents: list[dict] = []
-    resolved = 0
+    resolved = skipped_offplan = 0
+    # One query for the whole batch rather than one per asset — the poller runs this
+    # every cycle for every loom.
+    offplan = offplan_mod.active_map()
     for ev in events:
         if isinstance(ev, IncidentOpened):
+            aid = incidents.asset_id_for(cfg, ev.asset_ref)
+            if aid in offplan:
+                # Deliberately not in production. Opening an incident here is how the
+                # system earns a reputation for crying wolf: a prompt, a re-prompt and an
+                # escalation to the shift in-charge about a loom nobody intended to run.
+                # The stop is still in the feed and still counted as downtime — it is the
+                # PAGE that is suppressed, not the fact.
+                skipped_offplan += 1
+                continue
             inc = incidents.open_incident(cfg, ev.asset_ref, ev.condition, at=ev.at,
                                           label=(ev.context or {}).get("label"))
             if inc.get("created"):
@@ -58,7 +71,7 @@ def apply_events(cfg: "config.Config", events: list) -> dict:
     for inc in new_incidents:
         classify.on_open(cfg, inc)
 
-    return {"opened": len(new_incidents), "resolved": resolved}
+    return {"opened": len(new_incidents), "resolved": resolved, "skipped_offplan": skipped_offplan}
 
 
 def poll_once(cfg: "config.Config", source) -> dict:

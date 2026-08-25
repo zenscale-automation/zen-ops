@@ -91,13 +91,40 @@ def start_ladder(c, cfg: "config.Config", ticket_row, start_rung: int = 0,
 
 def _schedule_next(c, cfg: "config.Config", esc_row, base_iso: str, ladder: list) -> None:
     nxt = esc_row["rung"] + 1
-    if nxt >= len(ladder):
+    if nxt < len(ladder):
+        rung = ladder[nxt]
+        due = clock.plus_minutes(rung["after_minutes"], base=clock.parse(base_iso))
+        _insert_rung(
+            c, ticket_id=esc_row["ticket_id"], incident_id=esc_row["incident_id"],
+            rung=nxt, notify_role=rung["notify"], action=rung.get("action"),
+            due_at=due, trigger="timer",
+        )
         return
-    rung = ladder[nxt]
-    due = clock.plus_minutes(rung["after_minutes"], base=clock.parse(base_iso))
+
+    # Past the last rung. If it declares repeat_every_minutes, keep asking on that
+    # cadence for as long as the asset is still stopped.
+    #
+    # Without this the ladder simply runs out: the last person is told once, and if they
+    # miss it — phones are not always looked at over machine noise — the fault is never
+    # raised again. A loom that has been down nine hours would be as quiet as one that
+    # has been down forty minutes, which is precisely the failure this system exists to
+    # remove. The rung is re-scheduled from NOW rather than from the incident's start, so
+    # the interval means what it says however long the fault has already run.
+    last = ladder[-1] if ladder else None
+    every = last.get("repeat_every_minutes") if isinstance(last, dict) else None
+    if not every:
+        return
+    try:
+        every = float(every)
+    except (TypeError, ValueError):
+        return
+    if every <= 0:
+        return
+    due = clock.plus_minutes(every)
     _insert_rung(
-        c, ticket_id=esc_row["ticket_id"], incident_id=esc_row["incident_id"], rung=nxt,
-        notify_role=rung["notify"], action=rung.get("action"), due_at=due, trigger="timer",
+        c, ticket_id=esc_row["ticket_id"], incident_id=esc_row["incident_id"],
+        rung=esc_row["rung"], notify_role=last["notify"], action=last.get("action"),
+        due_at=due, trigger="repeat",
     )
 
 

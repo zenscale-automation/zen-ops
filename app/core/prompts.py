@@ -15,6 +15,12 @@ from .. import clock, config
 # department would have inherited silently.
 
 
+def _norm(value: str) -> str:
+    """Lowercase, letters and digits only. Button text arrives with whatever spacing and
+    punctuation the approved template happens to use."""
+    return "".join(ch for ch in (value or "").lower() if ch.isalnum())
+
+
 def options(cfg: "config.Config") -> list[dict]:
     """Numbered options 1..N for the prompt. Order is file order in reasons.yaml, so
     the digit->code mapping is stable. 'Other' is always the final option."""
@@ -68,13 +74,24 @@ def parse(cfg: "config.Config", text: str) -> tuple[str, str | None] | None:
             if o["n"] == n:
                 return o["code"], None
         return None
-    # exact label match (en)
-    low = t.lower()
+    # Label match, normalised. The text that comes back from a tapped button is whatever
+    # the APPROVED TEMPLATE says, which is not necessarily what reasons.yaml says — the
+    # template is frozen at Meta and the YAML is not, so they drift. Normalising removes
+    # spacing and punctuation differences ("Beam Change/Gating" vs "Beam change /
+    # gaiting"); genuine wording differences need an explicit alias, below.
+    low = _norm(t)
     for o in opts:
-        if o["label"].lower() == low:
+        if _norm(o["label"]) == low:
             return o["code"], None
+    # Explicit aliases, for when the template wording and the config wording genuinely
+    # differ. Without these a supervisor taps a button and the system silently records
+    # nothing, then asks them again.
+    for c in cfg.codes:
+        for alias in (c.get("prompt_aliases") or []):
+            if _norm(str(alias)) == low:
+                return c["code"], None
     # code match
     for o in opts:
-        if o["code"].lower() == low:
+        if o["code"].lower() == t.strip().lower():
             return o["code"], None
     return None

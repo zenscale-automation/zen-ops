@@ -36,7 +36,10 @@ roles:
 # That is the right setting for the pilot: until the real per-role roster exists,
 # one accountable person is honest, and per-role routing that resolves to invented
 # names is not. Turn it off once the roster is in.
-default_owner: production_manager
+# Shailendra, engineering head — the one accountable person for the pilot. Named here
+# rather than left as the invented "production_manager" so route_all_to_default points at
+# somebody who actually exists and can actually be reached.
+default_owner: shailendra
 route_all_to_default: true
 
 people:
@@ -50,6 +53,7 @@ people:
   balwinder_s:  { name: Balwinder S,    whatsapp: "+919000000007", placeholder: true }
   production_manager:
                 { name: Production Mgr, whatsapp: "+919000000008", placeholder: true }
+  shailendra:   { name: Shailendra, whatsapp: "+918696099222" }
 
 # The shift block does double duty: it resolves who is on duty at 03:00, and it is what
 # auto_classify uses to detect the changeover pattern. One source of truth for both.

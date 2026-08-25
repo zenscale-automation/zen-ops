@@ -11,6 +11,8 @@ lifecycle converges inside core/incidents — the same path a Phase-2 panel woul
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import hmac
 import json
@@ -23,6 +25,8 @@ from ..core import incidents, prompts
 from ..notifiers.whatsapp import normalise_msisdn
 
 bp = Blueprint("webhooks", __name__)
+
+log = logging.getLogger("ops.webhooks")
 
 
 # --- signature verification ------------------------------------------------
@@ -64,6 +68,40 @@ def _extract_meta_messages(data: dict) -> list[dict]:
             for msg in value.get("messages", []) or []:
                 out.append(msg)
     return out
+
+
+def _pickyassist_message(data: dict) -> dict | None:
+    """PickyAssist posts one flat message, not Meta's entry[].changes[].value envelope.
+
+    Shape (verified against their documentation):
+      {"number": "919446XXXXXX", "message-in": "2", "message_in_raw": "2",
+       "type": 1, "application": 8, "unique-id": "70946012", "direction": 0}
+    and for a tapped quick-reply button, additionally:
+      {"interactive": {"type": 2, "id": "<the button id we sent>", "description": null}}
+
+    Returns None for anything that is not an inbound message from a person — delivery
+    receipts and echoes of our own outbound both arrive here too, and answering them
+    as replies would set a reason nobody gave.
+    """
+    if not isinstance(data, dict) or "number" not in data:
+        return None
+    # direction 0 is inbound. Anything else is our own message coming back.
+    if str(data.get("direction", 0)) not in ("0", "None", ""):
+        return None
+
+    interactive = data.get("interactive") or {}
+    # A button tap carries the id we set when sending. Prefer it over the label: the
+    # label is display text that may be translated or truncated, the id is ours.
+    text = ""
+    if isinstance(interactive, dict) and interactive.get("id") is not None:
+        text = str(interactive["id"])
+    if not text:
+        text = str(data.get("message_in_raw") or data.get("message-in") or "")
+    return {
+        "sender": str(data.get("number") or ""),
+        "text": text.strip(),
+        "provider_id": str(data.get("unique-id") or ""),
+    }
 
 
 def _meta_reply_text(msg: dict) -> str:
@@ -147,19 +185,45 @@ def _find_incident(cfg, channel: str, address: str, context_msg_id: str | None,
     return None
 
 
-def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
-            asset_ref: str | None):
-    cfg = current_app.config["OPS_CFG"]
-    # record verbatim FIRST, with the sender normalised — this row is what opens the
-    # 24-hour service window the notifier checks before choosing free text vs template
+def _record_raw(channel: str, body: str, sender: str = "") -> int:
+    """Store the delivery verbatim, before anything decides whether it is interesting.
+
+    Reply parsing will be wrong sometimes — a new provider, a changed shape, a reply we
+    did not anticipate. Without the raw row those incidents cannot be reconstructed, and
+    "the supervisor says they answered" becomes unanswerable. So this runs first, for
+    every delivery, including the ones that turn out to be delivery receipts.
+
+    The normalised sender is what opens the 24-hour service window the notifier checks
+    before choosing free text over a template.
+    """
     stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
-    raw_id = db.execute(
+    return db.execute(
         "INSERT INTO inbound_raw(channel, received_at, body, sender) VALUES (?,?,?,?)",
-        (channel, clock.now_iso(), request.get_data(as_text=True) or text, stored_sender),
+        (channel, clock.now_iso(), body, stored_sender),
     )
+
+
+def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
+            asset_ref: str | None, raw_id: int | None = None):
+    cfg = current_app.config["OPS_CFG"]
+    if raw_id is None:
+        raw_id = _record_raw(channel, request.get_data(as_text=True) or text, sender)
+    else:
+        # The route already stored the body; attach the sender now that it is parsed, so
+        # the service-window lookup can find it.
+        stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
+        if stored_sender:
+            db.execute("UPDATE inbound_raw SET sender=? WHERE id=?", (stored_sender, raw_id))
 
     incident_id = _find_incident(cfg, channel, sender, context_msg_id, asset_ref)
     parsed = prompts.parse(cfg, text)
+    if text and not parsed:
+        # Loud on purpose. An unparsed reply means a human answered and the system did
+        # not hear them — they will be asked again, then their manager will be escalated
+        # to, for a fault that was reported. When the first real reply arrives in a shape
+        # we did not anticipate, this line is how anyone finds out.
+        log.warning("unparsed %s reply from %s: %r — nobody's answer was recorded",
+                    channel, sender, text[:120])
     result = {"matched": False, "incident_id": incident_id, "code": None, "raw_id": raw_id}
 
     if incident_id and parsed:
@@ -187,21 +251,44 @@ def whatsapp_verify():
 
 @bp.post("/webhook/whatsapp")
 def whatsapp():
+    """Inbound WhatsApp, from whichever provider is in front of us.
+
+    PickyAssist is what sends today; the Meta envelope is still parsed because the
+    account exists and a stray delivery from it must not 500. Which one it is is decided
+    by the shape of the body, not by configuration — a provider switch should not be able
+    to silently disconnect replies, which is exactly what happened when the notifier was
+    rewritten and this file was not.
+    """
     if not _verify_meta():
         return jsonify({"error": "bad signature"}), 401
     data = request.get_json(silent=True) or {}
+    if not data and request.form:
+        data = request.form.to_dict()      # some providers post form-encoded
+
+    # Record the delivery VERBATIM before anything can decide it is uninteresting.
+    # This used to live inside _handle, which the early return below never reached — so
+    # a reply in a shape we failed to parse left no trace at all, and the one record that
+    # would let somebody reconstruct what the supervisor actually sent did not exist.
+    raw_id = _record_raw("whatsapp", request.get_data(as_text=True) or "")
+
+    picky = _pickyassist_message(data)
+    if picky:
+        return _handle("whatsapp", picky["sender"], picky["text"],
+                       None,   # PickyAssist carries no reply-to; see _find_incident
+                       None, raw_id=raw_id)
+
     messages = _extract_meta_messages(data)
     if not messages:
-        # delivery receipt, read receipt, or a status change. Acknowledge it — a non-200
-        # makes Meta retry and eventually disable the subscription.
-        return jsonify({"ignored": True}), 200
+        # A delivery receipt, a read receipt, or an echo. Acknowledge it — a non-200
+        # makes providers retry and eventually disable the subscription.
+        return jsonify({"ignored": True, "raw_id": raw_id}), 200
 
     result = None
     for msg in messages:
         sender = str(msg.get("from") or "")
         text = _meta_reply_text(msg)
         context_msg_id = (msg.get("context") or {}).get("id")
-        result = _handle("whatsapp", sender, text, context_msg_id, None)
+        result = _handle("whatsapp", sender, text, context_msg_id, None, raw_id=raw_id)
     return result
 
 

@@ -67,6 +67,10 @@ codes:
     show_in_prompt: true
 
   - code: weaving.beam_change
+    # The approved WhatsApp template says "Beam Change/Gating" — button text is frozen at
+    # Meta, this file is not, so they have already drifted. Without the alias a supervisor
+    # taps the button, nothing is recorded, and they are asked the same question again.
+    prompt_aliases: ["Beam Change/Gating", "Beam Change / Gating"]
     label:
       en: Beam change / gaiting
       hi: बीम बदलना
