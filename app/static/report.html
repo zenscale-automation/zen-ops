@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ops-core enforcement</title>
+<style>
+  /*
+    The plant head's view: promises made versus kept. Reads top-down in the order the
+    questions get asked in a review meeting — who is the biggest defaulter, what is
+    eating the hours, how fast do reasons come back. Everything on this page is computed
+    from events recorded at the moment they happened; nothing is anybody's recollection.
+  */
+  :root {
+    --page:#f9f9f7; --surface:#fcfcfb; --sunk:#f2f1ec;
+    --text:#0b0b0b; --text-2:#52514e; --muted:#8a8880;
+    --grid:#e4e3dc; --border:rgba(11,11,11,0.11);
+    --accent:#2a78d6;
+    --good:#137a13; --good-bg:#e7f3e7;
+    --warn:#8a5a00; --warn-bg:#fbf0d8;
+    --bad:#b03030;  --bad-bg:#fbeaea;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme:dark){ :root:where(:not([data-theme="light"])){
+    --page:#0d0d0d; --surface:#1a1a19; --sunk:#232322;
+    --text:#f5f5f3; --text-2:#c3c2b7; --muted:#8f8d85;
+    --grid:#2e2e2b; --border:rgba(255,255,255,0.13);
+    --accent:#5b9ff0;
+    --good:#5cc45c; --good-bg:#162916;
+    --warn:#e8b45c; --warn-bg:#2e2513;
+    --bad:#f08080;  --bad-bg:#2e1717;
+    color-scheme:dark; } }
+  :root[data-theme="dark"]{
+    --page:#0d0d0d; --surface:#1a1a19; --sunk:#232322;
+    --text:#f5f5f3; --text-2:#c3c2b7; --muted:#8f8d85;
+    --grid:#2e2e2b; --border:rgba(255,255,255,0.13);
+    --accent:#5b9ff0;
+    --good:#5cc45c; --good-bg:#162916;
+    --warn:#e8b45c; --warn-bg:#2e2513;
+    --bad:#f08080;  --bad-bg:#2e1717;
+    color-scheme:dark; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14.5px;line-height:1.5}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  .num{font-variant-numeric:tabular-nums}
+
+  header{display:flex;align-items:center;gap:12px;padding:12px 20px;
+    border-bottom:1px solid var(--border);background:var(--surface);
+    position:sticky;top:0;z-index:30;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:700}
+  header .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);
+    border:1px solid var(--border);border-radius:999px;padding:4px 10px;background:var(--page)}
+
+  main{max-width:960px;margin:0 auto;padding:20px}
+  section{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:18px 20px;margin-bottom:16px}
+  section > h2{font-size:12px;margin:0 0 3px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.7px;color:var(--muted)}
+  .cap{font-size:13px;color:var(--muted);margin:0 0 14px;max-width:70ch}
+  .cap:last-child{margin-bottom:0}
+
+  .headline{padding:16px 18px;border-radius:10px;background:var(--sunk);
+    border:1px solid var(--grid);margin-bottom:14px}
+  .headline .lead{font-size:19px;font-weight:650;letter-spacing:-.2px;line-height:1.3}
+  .headline .sub{font-size:14px;color:var(--text-2);margin-top:4px}
+
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--grid);
+    font-size:13.5px;vertical-align:middle}
+  th{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700}
+  th.r,td.r{text-align:right}
+  tr:last-child td{border-bottom:none}
+  .empty{color:var(--muted);font-size:13px;padding:14px 2px}
+
+  .tag{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;
+    border-radius:5px;text-transform:uppercase;letter-spacing:.4px}
+  .tag.bad{color:var(--bad);background:var(--bad-bg)}
+  .tag.good{color:var(--good);background:var(--good-bg)}
+  .tag.warn{color:var(--warn);background:var(--warn-bg)}
+
+  /* proportional bars: number first, picture second, never a picture alone */
+  .bar{display:flex;align-items:center;gap:10px}
+  .bar .track{flex:1;height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}
+  .bar .fill{height:100%;border-radius:4px;background:var(--accent);min-width:2px}
+  .bar.bad .fill{background:var(--bad)}
+
+  input,select,button{font:inherit;font-size:13.5px}
+  input,select{background:var(--page);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:7px 9px}
+  button{background:var(--sunk);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:7px 13px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  input:focus-visible,select:focus-visible,button:focus-visible{
+    outline:2px solid var(--accent);outline-offset:2px}
+
+  .banner{padding:11px 14px;border-radius:9px;font-size:13.5px;margin-bottom:11px;
+    border:1px solid var(--border);background:var(--page)}
+  .banner.warn{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ops-core enforcement</h1>
+  <span class="pill" id="windowPill">&mdash;</span>
+  <div class="spacer"></div>
+  <label style="font-size:12px;color:var(--text-2)">Window
+    <select id="days">
+      <option value="7">7 days</option>
+      <option value="30" selected>30 days</option>
+      <option value="90">90 days</option>
+    </select>
+  </label>
+  <input id="key" type="password" placeholder="admin key" style="width:150px" autocomplete="off">
+  <button id="reload">Refresh</button>
+</header>
+
+<main>
+  <div id="locked"></div>
+  <div id="app" style="display:none">
+
+    <section>
+      <h2>Promises made and kept</h2>
+      <p class="cap">Every ticket asks its owner for a time estimate. The estimate snoozes
+        all chasing for exactly that long, and a machine still stopped when it expires is
+        a counted miss. This table is those records, worst first.</p>
+      <div class="headline" id="headline"></div>
+      <div id="defaulters"></div>
+      <div id="unanswered"></div>
+    </section>
+
+    <section>
+      <h2>Where the hours went</h2>
+      <p class="cap">Resolved stops in the window, by fault type and by machine. A stop
+        with no reason given is counted, not hidden &mdash; it means the question went
+        unanswered.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px" id="rollups"></div>
+    </section>
+
+    <section>
+      <h2>How fast reasons come back</h2>
+      <p class="cap">From a machine stopping to a person naming the fault. The system can
+        only route a repair as fast as somebody says what is wrong.</p>
+      <div id="response"></div>
+    </section>
+
+  </div>
+</main>
+
+<script>
+"use strict";
+
+var BASE = location.pathname.replace(/\/report\/?$/, "");
+function $(s) { return document.querySelector(s); }
+function el(t, c, txt) {
+  var n = document.createElement(t);
+  if (c) n.className = c;
+  if (txt != null) n.textContent = txt;
+  return n;
+}
+function keyOf() { return $("#key").value.trim(); }
+
+function fmtMinutes(m) {
+  m = Math.round(m || 0);
+  if (m < 60) return m + "m";
+  var h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m";
+}
+
+async function load() {
+  if (!keyOf()) return showLocked();
+  var res, body;
+  try {
+    res = await fetch(BASE + "/api/admin/report?days=" + $("#days").value,
+                      { headers: { "X-Admin-Key": keyOf() } });
+    body = await res.json();
+  } catch (e) {
+    return showLocked("Could not reach the server. ");
+  }
+  if (res.status === 403) return showLocked("That key was not accepted. ");
+  if (!res.ok) return showLocked("The report failed to load (" + res.status + "). ");
+
+  $("#locked").innerHTML = "";
+  $("#app").style.display = "";
+  $("#windowPill").textContent = "last " + body.window_days + " days";
+  render(body);
+}
+
+function showLocked(why) {
+  $("#app").style.display = "none";
+  var box = $("#locked");
+  box.innerHTML = "";
+  var b = el("div", "banner warn");
+  b.append(el("strong", null, why || "Enter the admin key to continue. "));
+  b.append(document.createTextNode(
+    "This page names people against their missed estimates, so it is behind the key. "
+    + "If you do not have it, ask whoever set the system up."));
+  box.append(b);
+}
+
+function render(d) {
+  renderHeadline(d);
+  renderDefaulters(d);
+  renderUnanswered(d);
+  renderRollups(d);
+  renderResponse(d);
+}
+
+/* ------------------------------------------------ the answer to the question */
+
+function renderHeadline(d) {
+  var box = $("#headline");
+  box.innerHTML = "";
+  var worst = (d.defaulters || [])[0];
+  if (!worst || !worst.misses) {
+    box.append(el("div", "lead", "No missed estimates in this window"));
+    box.append(el("div", "sub", (d.defaulters || []).length
+      ? "Every promise made was kept or is still running."
+      : "No estimates were given in this window at all — see below for what went unasked or unanswered."));
+    return;
+  }
+  box.append(el("div", "lead", worst.person + " is the biggest defaulter"));
+  box.append(el("div", "sub",
+    worst.misses + " missed estimate" + (worst.misses > 1 ? "s" : "")
+    + (worst.overrun_minutes ? ", " + fmtMinutes(worst.overrun_minutes)
+        + " over their own promises" : "")
+    + " out of " + worst.promises + " made."));
+}
+
+function renderDefaulters(d) {
+  var box = $("#defaulters");
+  box.innerHTML = "";
+  var rows = d.defaulters || [];
+  if (!rows.length) {
+    box.append(el("div", "empty", "Nobody has been asked for an estimate yet."));
+    return;
+  }
+  var t = el("table"), thead = el("thead"), head = el("tr");
+  ["Person", "Promises", "Missed", "Kept", "Over own estimate", "Open now"]
+    .forEach(function (h, i) { head.append(el("th", i ? "r" : "", h)); });
+  thead.append(head); t.append(thead);
+  var tb = el("tbody");
+  rows.forEach(function (r) {
+    var tr = el("tr");
+    tr.append(el("td", null, r.person));
+    tr.append(el("td", "r num", String(r.promises)));
+    var miss = el("td", "r num");
+    if (r.misses) miss.append(el("span", "tag bad", String(r.misses)));
+    else miss.append(document.createTextNode("0"));
+    tr.append(miss);
+    var kept = el("td", "r num");
+    if (r.kept_pct != null) {
+      kept.append(el("span", "tag " + (r.kept_pct >= 80 ? "good" : "warn"),
+                     r.kept_pct + "%"));
+    } else kept.append(document.createTextNode("—"));
+    tr.append(kept);
+    tr.append(el("td", "r num", r.overrun_minutes ? fmtMinutes(r.overrun_minutes) : "—"));
+    tr.append(el("td", "r num", String(r.open_now || 0)));
+    tb.append(tr);
+  });
+  t.append(tb);
+  box.append(t);
+}
+
+function renderUnanswered(d) {
+  var box = $("#unanswered");
+  box.innerHTML = "";
+  var u = d.asked_but_never_estimated || {};
+  var teams = Object.keys(u);
+  if (!teams.length) return;
+  var total = teams.reduce(function (a, k) { return a + u[k]; }, 0);
+  var b = el("div", "banner warn");
+  b.append(el("strong", null, total + " ticket" + (total > 1 ? "s" : "")
+    + " where the estimate question was never answered. "));
+  b.append(document.createTextNode(
+    "Nobody put their name on a time: "
+    + teams.map(function (k) { return k + " (" + u[k] + ")"; }).join(", ")
+    + ". These are defaulters with no name attached."));
+  box.append(b);
+}
+
+/* --------------------------------------------------------------- downtime */
+
+function renderRollups(d) {
+  var box = $("#rollups");
+  box.innerHTML = "";
+  box.append(rollupTable("By fault", d.downtime_by_reason || [], function (r) {
+    return r.label || r.reason;
+  }));
+  box.append(rollupTable("By machine", d.downtime_by_machine || [], function (r) {
+    return String(r.machine).replace(/_/g, " ");
+  }));
+}
+
+function rollupTable(title, rows, nameOf) {
+  var wrap = el("div");
+  wrap.append(el("h2", null, title));
+  if (!rows.length) {
+    wrap.append(el("div", "empty", "Nothing resolved in this window."));
+    return wrap;
+  }
+  var max = Math.max.apply(null, rows.map(function (r) { return r.downtime_minutes; }));
+  var t = el("table"), tb = el("tbody");
+  rows.forEach(function (r) {
+    var name = nameOf(r);
+    var tr = el("tr");
+    tr.append(el("td", null, name));
+    var td = el("td");
+    var bar = el("div", "bar" + (name === "(no reason given)" ? " bad" : ""));
+    bar.append(el("span", "num", fmtMinutes(r.downtime_minutes)
+      + " · " + r.stops + " stop" + (r.stops > 1 ? "s" : "")));
+    var track = el("div", "track"), fill = el("div", "fill");
+    fill.style.width = (max ? Math.max(2, 100 * r.downtime_minutes / max) : 0) + "%";
+    track.append(fill); bar.append(track); td.append(bar);
+    tr.append(td);
+    tb.append(tr);
+  });
+  t.append(tb);
+  wrap.append(t);
+  return wrap;
+}
+
+/* --------------------------------------------------------------- response */
+
+function renderResponse(d) {
+  var box = $("#response");
+  box.innerHTML = "";
+  var r = d.reason_response;
+  if (!r) {
+    box.append(el("div", "empty",
+      "No replies to the fault question in this window."));
+    return;
+  }
+  var t = el("table"), tb = el("tbody");
+  [["Replies received", String(r.replies)],
+   ["Typical wait for an answer", fmtMinutes(r.median_minutes)],
+   ["Slowest 10% waited at least", fmtMinutes(r.p90_minutes)]]
+    .forEach(function (pair) {
+      var tr = el("tr");
+      tr.append(el("td", null, pair[0]));
+      tr.append(el("td", "r num", pair[1]));
+      tb.append(tr);
+    });
+  t.append(tb);
+  box.append(t);
+}
+
+/* ----------------------------------------------------------------- wiring */
+
+var keyTimer = null;
+$("#key").oninput = function () {
+  clearTimeout(keyTimer);
+  keyTimer = setTimeout(function () { if (keyOf()) load(); }, 400);
+};
+$("#days").onchange = load;
+$("#reload").onclick = load;
+
+showLocked();
+load();
+</script>
+</body>
+</html>

@@ -66,6 +66,14 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
     def dashboard():
         return redirect("/")
 
+    @app.get("/report")
+    def report():
+        # The plant head's enforcement view. Same no-store reasoning as /admin.
+        resp = send_from_directory(app.static_folder, "report.html")
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
     @app.get("/admin")
     def admin():
         # no-store, not merely no-cache: this page changes far more often than it is
