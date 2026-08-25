@@ -241,6 +241,9 @@ def overview():
             "in_prompt": bool(c.get("show_in_prompt")),
         } for c in cfg.codes],
         "pilot_mode": _pilot_mode(cfg),
+        # So the roster grid can label each column with its actual hours. "Shift C" means
+        # nothing to somebody deciding whether Ravi can cover it; "22:00-06:00" does.
+        "shift_times": {k: (cfg.shifts or {}).get(k) for k in ("A", "B", "C")},
         "notes": {
             "prompt_list_locked": "Which reasons appear in the WhatsApp prompt is fixed by "
                                   "the approved template. Changing it needs a new template "
@@ -443,6 +446,95 @@ def set_roster(tid: str):
     # from a shift list, and half-applying a roster is worse than refusing it.
     return _apply("routing", {"roles": {tid: roster}}, _actor(),
                   {"updated": "roster", "id": tid, "roster": roster})
+
+
+@bp.post("/api/admin/roster/<tid>/<shift>")
+def add_to_shift(tid: str, shift: str):
+    """Put one person on one shift of one team.
+
+    PUT /roster/<team> replaces the whole grid, which is right for a bulk edit and wrong
+    for "Ravi is on nights now": the caller has to read the current roster, splice it,
+    and write it all back, and any concurrent edit is silently lost in the round trip.
+
+    Accepts an existing person_id, or a name and number to create one and assign them in
+    the same call — because "add someone to this team" is one thought, and making it two
+    API calls is how a half-finished roster happens.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    if tid not in (cfg.roles or {}):
+        return _err(404, "no such team", id=tid)
+    roster = _roster_of(cfg, tid)
+    bucket = "all" if "all" in roster else shift.upper()
+    if bucket != "all" and bucket not in SHIFT_KEYS:
+        return _err(400, "shift must be A, B or C", got=shift)
+
+    body = request.get_json(silent=True) or {}
+    pid = (body.get("person_id") or "").strip()
+    people_patch = {}
+
+    if not pid:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return _err(400, "give either person_id, or a name to create a new person")
+        pid = (body.get("id") or _slug(name)).strip()
+        if not _ID_RE.match(pid):
+            return _err(400, "id must be lowercase letters, digits and underscores", got=pid)
+        if pid in (cfg.people or {}):
+            return _err(409, "a person with that id already exists — pass person_id to "
+                             "add the existing one", id=pid)
+        person = {"name": name}
+        if body.get("whatsapp"):
+            person["whatsapp"] = str(body["whatsapp"]).strip()
+        if body.get("gchat_space"):
+            person["gchat_space"] = str(body["gchat_space"]).strip()
+        if not person.get("whatsapp") and not person.get("gchat_space"):
+            return _err(400, "give the person a whatsapp number or a chat space — "
+                             "without one they can be rostered but never reached")
+        people_patch = {pid: person}
+    elif pid not in (cfg.people or {}):
+        return _err(404, "no such person", person_id=pid)
+
+    if pid in roster.get(bucket, []):
+        return _err(409, "already on that shift", person_id=pid, team=tid, shift=bucket)
+
+    roster[bucket] = list(roster.get(bucket, [])) + [pid]
+    patch = {"roles": {tid: roster}}
+    if people_patch:
+        patch["people"] = people_patch
+    return _apply("routing", patch, _actor(),
+                  {"added": pid, "to": tid, "shift": bucket,
+                   "created_person": bool(people_patch)})
+
+
+@bp.delete("/api/admin/roster/<tid>/<shift>/<pid>")
+def remove_from_shift(tid: str, shift: str, pid: str):
+    """Take one person off one shift. Refuses if it would leave that shift with nobody
+    on a team faults actually route to — the same rule as the bulk edit, applied where
+    the operator is far more likely to trip it."""
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    if tid not in (cfg.roles or {}):
+        return _err(404, "no such team", id=tid)
+    roster = _roster_of(cfg, tid)
+    bucket = "all" if "all" in roster else shift.upper()
+    if pid not in roster.get(bucket, []):
+        return _err(404, "that person is not on that shift",
+                    person_id=pid, team=tid, shift=bucket)
+
+    roster[bucket] = [x for x in roster[bucket] if x != pid]
+    if not roster[bucket] and tid in _targeted_teams(cfg):
+        return _err(409, "that is the last person on that shift, and faults route to "
+                         "this team — nobody would be called",
+                    team=tid, shift=bucket, used_by=_teams_using(cfg, tid),
+                    hint="add a replacement first; one person may cover two teams")
+
+    return _apply("routing", {"roles": {tid: roster}}, _actor(),
+                  {"removed": pid, "from": tid, "shift": bucket})
 
 
 # --------------------------------------------------------------------------- plans

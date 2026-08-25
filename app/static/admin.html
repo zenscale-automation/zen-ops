@@ -36,9 +36,15 @@
   .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
   .dot.ok{background:var(--good)} .dot.bad{background:var(--critical)} .dot.warn{background:var(--warning)}
 
-  main{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;padding:18px 22px;
-    max-width:1500px;margin:0 auto;align-items:start}
-  @media (max-width:1180px){main{grid-template-columns:minmax(0,1fr)}}
+  /* The API log is the deliverable for whoever rebuilds this UI, but it is reference
+     material, not something the operator reads. It gets a drawer, not a third of the
+     screen — the roster grid needs the width more. */
+  main{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;padding:18px 22px;
+    max-width:1080px;margin:0 auto;align-items:start;transition:max-width .15s}
+  body.log-open main{grid-template-columns:minmax(0,1fr) 400px;max-width:1560px}
+  @media (max-width:1180px){body.log-open main{grid-template-columns:minmax(0,1fr)}}
+  .log{display:none}
+  body.log-open .log{display:block}
 
   .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
     padding:16px 18px;margin-bottom:16px}
@@ -72,6 +78,32 @@
   .row.tight{gap:6px}
   label.f{display:flex;flex-direction:column;gap:4px;font-size:11px;
     text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+
+  /* roster grid */
+  .team{border:1px solid var(--grid);border-radius:10px;margin-bottom:12px;overflow:hidden}
+  .team-head{display:flex;align-items:flex-start;gap:12px;padding:11px 14px;
+    background:var(--page);border-bottom:1px solid var(--grid)}
+  .team-head > div:first-child{flex:1}
+  .team-head .cap{margin:2px 0 0}
+  .shifts{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--grid)}
+  .shifts.one{grid-template-columns:1fr}
+  @media (max-width:760px){.shifts{grid-template-columns:1fr}}
+  .shift{background:var(--surface);padding:11px 13px;min-height:96px;
+    display:flex;flex-direction:column;gap:9px}
+  .shift-h{display:flex;justify-content:space-between;align-items:baseline;
+    font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
+    font-weight:600}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;flex:1;align-content:flex-start}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;
+    background:var(--raised);border:1px solid var(--border);border-radius:999px;
+    padding:3px 5px 3px 11px}
+  .chip .ph{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;
+    color:var(--warning)}
+  .chip .x{border:none;background:none;color:var(--muted);cursor:pointer;
+    font-size:15px;line-height:1;padding:0 4px;border-radius:50%}
+  .chip .x:hover{color:var(--critical);background:var(--page)}
+  .add select{font-size:12px;padding:4px 7px;width:100%}
+  .add .newp{margin-top:7px}
 
   /* plan editor */
   .step{display:grid;grid-template-columns:26px 1fr 120px auto;gap:9px;align-items:center;
@@ -117,6 +149,7 @@
     admin key
     <input id="key" type="password" placeholder="X-Admin-Key" style="width:170px" autocomplete="off">
   </label>
+  <button id="toggleLog">API log</button>
   <button id="reload">Reload</button>
 </header>
 
@@ -147,9 +180,9 @@
 
     <!-- ============================= teams ============================= -->
     <section class="card">
-      <h2>Teams and shifts</h2>
-      <p class="cap">Somebody must be on duty for every shift a team gets called on —
-        one person may cover two teams, but nobody covering one is refused.</p>
+      <h2>Who is on duty</h2>
+      <p class="cap">Every shift a team gets called on needs somebody on it. One person
+        can cover two teams; nobody covering one is refused.</p>
       <div id="teams"></div>
       <div class="row" style="margin-top:12px">
         <input id="newTeam" placeholder="New team name, e.g. Engineering" style="flex:1">
@@ -475,70 +508,119 @@ function markDirty() { $("#savePlan").disabled = !keyOf(); }
 
 /* teams ------------------------------------------------------------------- */
 
+// Rebuilt from a <select multiple size=1>, which technically worked and was unusable:
+// you could not see who was on a team without opening it, and adding somebody needed a
+// ctrl-click. "Who is on nights?" is the question this screen exists to answer, so the
+// names are simply visible, and add and remove are one click each.
 function renderTeams() {
   const box = $("#teams");
   box.innerHTML = "";
-  const table = el("table");
-  const head = el("tr");
-  ["Team", "Shift A", "Shift B", "Shift C", "Called for", ""].forEach(h =>
-    head.append(el("th", null, h)));
-  table.append(el("thead")).firstChild.append(head);
-  const body = el("tbody");
+  if (!STATE.teams.length) { box.append(el("div", "empty", "No teams yet.")); return; }
 
   STATE.teams.forEach(t => {
-    const tr = el("tr");
-    const nameCell = el("td");
-    nameCell.append(el("strong", null, t.id));
-    if (t.targeted) nameCell.append(document.createTextNode(" "),
-      el("span", "tag ok", "in use"));
-    tr.append(nameCell);
+    const card = el("div", "team");
 
-    const isAll = "all" in t.roster;
-    ["A", "B", "C"].forEach(k => {
-      const td = el("td");
-      const sel = el("select");
-      sel.multiple = true;
-      sel.size = 1;
-      sel.style.minWidth = "108px";
-      STATE.people.forEach(p => {
-        const o = new Option(p.name, p.id);
-        o.selected = (isAll ? t.roster.all : (t.roster[k] || [])).includes(p.id);
-        sel.append(o);
-      });
-      sel.onchange = () => saveRoster(t, sel, k, isAll);
-      td.append(sel);
-      if (!isAll && !(t.roster[k] || []).length)
-        td.append(el("div", "tag " + (t.targeted ? "bad" : "warn"), "nobody"));
-      tr.append(td);
-    });
+    const head = el("div", "team-head");
+    const title = el("div");
+    title.append(el("strong", null, t.id));
+    const called = describeUse(t.used_by);
+    title.append(el("div", "cap", called ? "called for " + called : "nothing routes here yet"));
+    head.append(title);
 
-    tr.append(el("td", null, describeUse(t.used_by) || "—"));
-
-    const act = el("td");
-    const del = el("button", "sm danger", "Delete");
+    const del = el("button", "sm danger", "Delete team");
     del.disabled = !!(t.used_by.reasons.length || t.used_by.plan_steps.length);
-    del.title = del.disabled ? "still routed to — move those over first" : "";
+    del.title = del.disabled ? "faults still route here — move them first" : "";
     del.onclick = async () => {
       if (!confirm("Delete team " + t.id + "?")) return;
       handle(await api("DELETE", "/api/admin/teams/" + t.id), "Team deleted");
     };
-    act.append(del);
-    tr.append(act);
-    body.append(tr);
+    head.append(del);
+    card.append(head);
+
+    const isAll = "all" in t.roster;
+    const buckets = isAll ? ["all"] : ["A", "B", "C"];
+    const grid = el("div", "shifts" + (isAll ? " one" : ""));
+
+    buckets.forEach(k => {
+      const col = el("div", "shift");
+      const label = el("div", "shift-h");
+      label.append(el("span", null, isAll ? "Every shift" : "Shift " + k));
+      if (STATE.shift_times && STATE.shift_times[k])
+        label.append(el("span", "abs", STATE.shift_times[k]));
+      col.append(label);
+
+      const members = (isAll ? t.roster.all : t.roster[k]) || [];
+      const list = el("div", "chips");
+      members.forEach(pid => {
+        const person = STATE.people.find(x => x.id === pid);
+        const chip = el("span", "chip");
+        chip.append(document.createTextNode(person ? person.name : pid));
+        if (person && person.placeholder) chip.append(el("span", "ph", "sample"));
+        const x = el("button", "x", "×");
+        x.title = "Take off this shift";
+        x.onclick = async () => {
+          handle(await api("DELETE", "/api/admin/roster/" + t.id + "/" + k + "/" + pid),
+                 (person ? person.name : pid) + " taken off " + t.id);
+        };
+        chip.append(x);
+        list.append(chip);
+      });
+      if (!members.length) {
+        list.append(el("span", "tag " + (t.targeted ? "bad" : "warn"),
+                       t.targeted ? "nobody — faults here would go uncalled" : "nobody yet"));
+      }
+      col.append(list);
+      col.append(addControl(t, k));
+      grid.append(col);
+    });
+
+    card.append(grid);
+    box.append(card);
   });
-  table.append(body);
-  box.append(table);
 }
 
-async function saveRoster(team, sel, shift, isAll) {
-  const picked = [...sel.selectedOptions].map(o => o.value);
-  const members = isAll ? { all: picked }
-    : { A: team.roster.A || [], B: team.roster.B || [], C: team.roster.C || [] };
-  if (!isAll) members[shift] = picked;
-  handle(await api("PUT", "/api/admin/roster/" + team.id, { members }),
-         "Roster updated for " + team.id);
+// One control that both assigns an existing person and creates a new one, because "add
+// somebody to this team" is a single thought. Splitting it into "create a person, then
+// go and find the team again" is how a roster ends up half-finished.
+function addControl(team, shift) {
+  const wrap = el("div", "add");
+  const sel = el("select");
+  sel.append(new Option("+ add someone…", ""));
+  const already = new Set((("all" in team.roster) ? team.roster.all : team.roster[shift]) || []);
+  STATE.people.filter(p => !already.has(p.id))
+    .forEach(p => sel.append(new Option(p.name, p.id)));
+  sel.append(new Option("— somebody new —", "__new__"));
+
+  sel.onchange = async () => {
+    const v = sel.value;
+    sel.value = "";
+    if (!v) return;
+    if (v === "__new__") { showNewPerson(team, shift, wrap); return; }
+    handle(await api("POST", "/api/admin/roster/" + team.id + "/" + shift,
+                     { person_id: v }), "Added to " + team.id);
+  };
+  wrap.append(sel);
+  return wrap;
 }
 
+function showNewPerson(team, shift, wrap) {
+  wrap.querySelectorAll(".newp").forEach(n => n.remove());
+  const form = el("div", "newp row tight");
+  const name = el("input"); name.placeholder = "Name"; name.style.width = "112px";
+  const phone = el("input"); phone.placeholder = "+91…"; phone.style.width = "124px";
+  const go = el("button", "sm primary", "Add");
+  go.onclick = async () => {
+    if (!name.value.trim()) { name.focus(); return; }
+    handle(await api("POST", "/api/admin/roster/" + team.id + "/" + shift,
+                     { name: name.value.trim(), whatsapp: phone.value.trim() }),
+           name.value.trim() + " added to " + team.id);
+  };
+  const cancel = el("button", "sm", "Cancel");
+  cancel.onclick = () => form.remove();
+  form.append(name, phone, go, cancel);
+  wrap.append(form);
+  name.focus();
+}
 /* people ------------------------------------------------------------------ */
 
 function renderPeople() {
@@ -742,6 +824,11 @@ async function runSim() {
 
 /* wiring ------------------------------------------------------------------ */
 
+$("#toggleLog").onclick = () => {
+  document.body.classList.toggle("log-open");
+  $("#toggleLog").textContent = document.body.classList.contains("log-open")
+    ? "Hide API log" : "API log";
+};
 $("#reload").onclick = load;
 let keyDebounce = null;
 $("#key").oninput = () => {
