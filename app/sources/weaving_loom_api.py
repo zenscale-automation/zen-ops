@@ -33,6 +33,18 @@ from .base import IncidentOpened, IncidentResolved
 log = logging.getLogger("ops.source.loom")
 
 
+def _num(value) -> float | None:
+    """Loom numerics may arrive as int, float, or numeric string. None if not numeric.
+
+    The API now sends JSON numbers that may be FLOATS: weft/warp/ExtData are logically
+    0/1 but arrive as 0.0/1.0. str(0.0) != str(0), so every comparison must be numeric.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_ts(value) -> datetime | None:
     """Loom timestamps are naive server-local ISO strings. Parsed ONLY to measure an
     interval against another loom timestamp — never compared to ops-core's UTC clock."""
@@ -92,10 +104,12 @@ class WeavingLoomApiSource:
         val = row.get(field)
         if val is None:
             return False
-        if "equals" in cond:
-            return str(val) == str(cond["equals"])
-        if "ne" in cond:
-            return str(val) != str(cond["ne"])
+        for op in ("equals", "ne"):
+            if op in cond:
+                a, b = _num(val), _num(cond[op])
+                eq = (a == b) if (a is not None and b is not None) \
+                    else (str(val) == str(cond[op]))
+                return eq if op == "equals" else not eq
         try:
             num = float(val)
         except (TypeError, ValueError):
@@ -120,7 +134,11 @@ class WeavingLoomApiSource:
             val = row.get(f)
             if val is None:
                 continue
-            if str(val) == str(self.thread_low):
+            n, low = _num(val), _num(self.thread_low)
+            if n is not None and low is not None:
+                if n == low:
+                    return True
+            elif str(val) == str(self.thread_low):
                 return True
         return False
 
@@ -273,14 +291,26 @@ class WeavingLoomApiSource:
             self._cursor = to
 
         events: list = []
+        # `since` is INCLUSIVE, so a stalled feed keeps replaying its final boundary row.
+        # Such a row is a repeat, not fresh evidence: if it is older than the offline
+        # threshold it must not drive state, or an OFFLINE loom is resurrected as RUNNING
+        # on every poll. Anchor on the clock as it stood BEFORE this page was folded in.
+        now_live = self._now_live()
 
         for machine, row in latest.items():
             ref = self._ref(machine)
             prev = self._last.get(ref)
             ts = row.get(self.ts_field, "")
             if ts:
-                self._last_seen[ref] = ts
+                if ts >= self._last_seen.get(ref, ""):
+                    self._last_seen[ref] = ts
                 self._note_server_ts(ts)
+
+            if self.offline_after_seconds and now_live is not None and ts:
+                sampled = _parse_ts(ts)
+                if sampled is not None and \
+                        (now_live - sampled).total_seconds() >= self.offline_after_seconds:
+                    continue   # stale repeat: let _offline_events own this asset
 
             if self._is_stopped(row):
                 condition = "THREAD_STOP" if self._thread_broken(row) else "STOPPED"
@@ -337,9 +367,9 @@ class WeavingLoomApiSource:
 
         stale: list[str] = []
         for ref, seen_ts in self._last_seen.items():
-            machine = ref[len(self.asset_ref_prefix):]
-            if machine in latest:
-                continue                        # reported this poll
+            # NOTE: presence in `latest` is NOT proof of freshness. `since` is INCLUSIVE,
+            # so a dead feed keeps replaying its final boundary row and every machine
+            # appears in every page forever. Age on the timestamp, never on presence.
             seen = _parse_ts(seen_ts)
             if seen is None:
                 continue
@@ -356,10 +386,14 @@ class WeavingLoomApiSource:
         if len(stale) >= len(self._last_seen):
             log.error(
                 "loom API feed is dark: all %d known machines have produced no rows for "
-                "%ds. This is a data-path fault (edge server, Tailscale, or the API), "
-                "not a shed fault — no incidents raised.",
+                "%ds. This is a data-path fault (edge server or the API), not a shed "
+                "fault — no incidents raised.",
                 len(stale), self.offline_after_seconds,
             )
+            # Suppress the *incidents*, but never keep claiming the looms are RUNNING:
+            # the state must not lie while the feed is dark.
+            for ref in stale:
+                self._last[ref] = "OFFLINE"
             return []
 
         events: list = []
