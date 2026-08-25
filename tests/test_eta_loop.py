@@ -136,3 +136,39 @@ def test_the_report_names_the_defaulter_from_recorded_promises(cfg, monkeypatch)
     assert worst["person"] == "Shailendra"
     assert worst["misses"] == 1
     assert d["downtime_by_machine"] is not None
+
+
+# --- the reply path, end to end through the webhook ------------------------------
+
+def test_a_pickyassist_number_reply_lands_as_an_estimate(cfg, monkeypatch):
+    """The full loop as it happens on a phone: reason set, estimate question sent, the
+    person types "3" into WhatsApp, PickyAssist posts it to the webhook — and that bare
+    number must land as THEIR estimate on THEIR ticket, not as a reason for something
+    else. Both questions are numeric; the router keys on which question was asked last."""
+    from app.core import routing
+    from app.main import create_app
+
+    inc, tkt = _open_with_reason(cfg)
+    ticker.tick(cfg)
+    from app.core import outbox as outbox_mod
+    outbox_mod.drain(cfg)                    # the eta question reaches the outbox log
+
+    sent_to = db.query_one("SELECT recipient FROM outbox ORDER BY id DESC LIMIT 1")
+    replier = sent_to["recipient"].lstrip("+").replace(" ", "")
+
+    app = create_app(cfg=cfg, start_workers=False)
+    resp = app.test_client().post("/webhook/whatsapp", json={
+        "number": replier, "message-in": "3", "message_in_raw": "3",
+        "direction": 0, "unique-id": "t-1"})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["matched"] is True and data["kind"] == "eta" and data["hours"] == 3
+
+    t = db.query_one("SELECT eta_hours, eta_by FROM tickets WHERE id=?", (tkt["id"],))
+    assert t["eta_hours"] == 3
+    assert t["eta_by"] == "shailendra", "the promise carries the person's name"
+
+    pending = db.query(
+        "SELECT action FROM escalations WHERE ticket_id=? AND status='pending'",
+        (tkt["id"],))
+    assert [p["action"] for p in pending] == ["eta_check"], "everything else snoozed"
