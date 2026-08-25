@@ -89,7 +89,11 @@ def test_webhook_signed_reply_sets_reason(cfg, monkeypatch):
     # So the prompt must actually have been SENT for the reply to have something to
     # match against. Advance past prompt_after_minutes, fire the ladder, drain the
     # outbox, and only then reply, exactly as it happens on the floor.
-    clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=16))
+    # Derived from config, not hardcoded: these timings are meant to be tuned against
+    # real data, and a test that pins them makes tuning look like a regression.
+    first_ask = next(r["after_minutes"] for r in cfg.unknown_ladder
+                     if r.get("action") == "ask_reason")
+    clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=first_ask + 1))
     ticker.tick(cfg)
     outbox.drain(cfg)
     sent_to = db.query_one("SELECT recipient FROM outbox ORDER BY id DESC LIMIT 1")

@@ -1031,7 +1031,8 @@ def set_offplan(asset_ref: str):
     until = (body.get("until") or "").strip()
     if not until:
         return _err(400, "until is required",
-                    hint="a loom parked with no end date hides a real fault — give the "
+                    hint=f"a {cfg.asset_type} parked with no end date hides a real fault — "
+                         f"give the "
                          "time you expect it back, you can always extend it")
     try:
         until_dt = clock.parse(until)

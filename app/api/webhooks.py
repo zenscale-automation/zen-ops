@@ -70,6 +70,28 @@ def _extract_meta_messages(data: dict) -> list[dict]:
     return out
 
 
+def _is_delivery_receipt(data: dict) -> bool:
+    """A receipt for something WE sent, in a shape we recognise.
+
+    Deliberately narrow. Anything not positively identified as a receipt is treated as a
+    possible human reply and stored, because the cost of an extra row is nothing and the
+    cost of losing somebody's answer is that they get asked again and then escalated
+    about.
+    """
+    if not isinstance(data, dict):
+        return False
+    # Meta: entry[].changes[].value.statuses with no messages alongside.
+    for entry in data.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            value = change.get("value", {}) or {}
+            if value.get("statuses") and not value.get("messages"):
+                return True
+    # PickyAssist echoes our own outbound back with direction != 0.
+    if "number" in data and str(data.get("direction", 0)) not in ("0", "None", ""):
+        return True
+    return False
+
+
 def _pickyassist_message(data: dict) -> dict | None:
     """PickyAssist posts one flat message, not Meta's entry[].changes[].value envelope.
 
@@ -265,11 +287,14 @@ def whatsapp():
     if not data and request.form:
         data = request.form.to_dict()      # some providers post form-encoded
 
-    # Record the delivery VERBATIM before anything can decide it is uninteresting.
-    # This used to live inside _handle, which the early return below never reached — so
-    # a reply in a shape we failed to parse left no trace at all, and the one record that
-    # would let somebody reconstruct what the supervisor actually sent did not exist.
-    raw_id = _record_raw("whatsapp", request.get_data(as_text=True) or "")
+    # Record VERBATIM before anything decides the delivery is uninteresting — but not
+    # delivery receipts, which arrive for every message we send and would bury the human
+    # replies this table exists to preserve. The distinction that matters is RECOGNISED:
+    # a receipt we understand is dropped, anything we do not understand is kept, because
+    # an unparseable reply is precisely the case somebody will need to reconstruct.
+    raw_id = None
+    if not _is_delivery_receipt(data):
+        raw_id = _record_raw("whatsapp", request.get_data(as_text=True) or "")
 
     picky = _pickyassist_message(data)
     if picky:

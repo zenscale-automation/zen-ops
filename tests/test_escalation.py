@@ -1,5 +1,7 @@
 """Escalation ladder advance + recurrence override."""
 
+from datetime import timedelta
+
 from app import clock, db
 from app.core import incidents, ticker
 
@@ -72,12 +74,12 @@ def test_unknown_ladder_prompts_then_escalates(cfg):
     from app.core import classify
     classify.on_open(cfg, inc)  # schedules unknown ladder (no auto-classify)
 
-    clock.CLOCK.advance(15 * 60)          # rung 0 ask_reason
-    ticker.tick(cfg)
-    clock.CLOCK.advance(15 * 60)          # rung 1 ask_reason (reprompt)
-    ticker.tick(cfg)
-    clock.CLOCK.advance(15 * 60)          # rung 2 -> shift_incharge (escalate)
-    ticker.tick(cfg)
+    # Walk the ladder as configured rather than at hardcoded intervals — the timings are
+    # tuned against real feed data, and pinning them here turns tuning into a red suite.
+    for rung in cfg.unknown_ladder:
+        clock.CLOCK.set_virtual(
+            clock.parse(inc["opened_at"]) + timedelta(minutes=rung["after_minutes"] + 1))
+        ticker.tick(cfg)
 
     fired = db.query(
         "SELECT action, notify_role FROM escalations WHERE incident_id=? AND status='fired' ORDER BY rung",

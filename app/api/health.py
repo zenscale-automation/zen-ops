@@ -38,7 +38,7 @@ def health():
     if stale:
         problems.append("no heartbeat from: " + ", ".join(stale))
     if poll_stale:
-        problems.append("no successful loom poll"
+        problems.append("no successful source poll"
                         + (f" for {poll_age}s" if poll_age is not None else " ever"))
     if failed:
         problems.append(f"{failed} page(s) gave up in the last hour — somebody was not called")
