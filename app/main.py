@@ -13,6 +13,7 @@ import logging
 from flask import Flask, redirect, send_from_directory
 
 from . import config, db
+from .api.admin_api import bp as admin_bp
 from .api.config_api import bp as config_bp
 from .api.health import bp as health_bp
 from .api.query import bp as query_bp
@@ -42,6 +43,7 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(query_bp)
     app.register_blueprint(config_bp)
+    app.register_blueprint(admin_bp)
 
     @app.get("/")
     def index():
@@ -50,6 +52,10 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
     @app.get("/dashboard")
     def dashboard():
         return redirect("/")
+
+    @app.get("/admin")
+    def admin():
+        return send_from_directory(app.static_folder, "admin.html")
 
     if start_workers:
         SUPERVISOR.start(cfg)

@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ops-core admin</title>
+<style>
+  /* Same tokens as dashboard.html so the two pages read as one product. */
+  :root {
+    --page:#f9f9f7; --surface:#fcfcfb; --text:#0b0b0b; --text-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --border:rgba(11,11,11,0.10); --raised:#f2f1ec;
+    --series:#2a78d6; --good:#0ca30c; --warning:#fab219; --critical:#d03b3b;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme:dark){ :root:where(:not([data-theme="light"])){
+    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
+    --series:#3987e5; color-scheme:dark; } }
+  :root[data-theme="dark"]{
+    --page:#0d0d0d; --surface:#1a1a19; --text:#fff; --text-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --border:rgba(255,255,255,0.10); --raised:#232322;
+    --series:#3987e5; color-scheme:dark; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.45}
+  code,pre,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+  header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);
+    background:var(--surface);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  header .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);
+    border:1px solid var(--border);border-radius:999px;padding:5px 11px;background:var(--page)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--good)} .dot.bad{background:var(--critical)} .dot.warn{background:var(--warning)}
+
+  main{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;padding:18px 22px;
+    max-width:1500px;margin:0 auto;align-items:start}
+  @media (max-width:1180px){main{grid-template-columns:minmax(0,1fr)}}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:16px 18px;margin-bottom:16px}
+  .card h2{font-size:13px;margin:0 0 2px;font-weight:650}
+  .card .cap{font-size:12px;color:var(--muted);margin-bottom:14px}
+
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--grid);font-size:13px;vertical-align:middle}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  .empty{color:var(--muted);font-size:13px;padding:12px 4px}
+
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+    border:1px solid var(--border);color:var(--text-2)}
+  .tag.warn{color:var(--warning);border-color:var(--warning)}
+  .tag.bad{color:var(--critical);border-color:var(--critical)}
+  .tag.ok{color:var(--good);border-color:var(--good)}
+
+  input,select,button{font:inherit;font-size:13px}
+  input,select{background:var(--page);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:6px 9px;min-width:0}
+  input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--series);outline-offset:1px}
+  button{background:var(--raised);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:6px 12px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--series)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--series);border-color:var(--series);color:#fff}
+  button.danger{color:var(--critical)}
+  button.sm{padding:3px 8px;font-size:12px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .row.tight{gap:6px}
+  label.f{display:flex;flex-direction:column;gap:4px;font-size:11px;
+    text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+
+  /* plan editor */
+  .step{display:grid;grid-template-columns:26px 1fr 120px auto;gap:9px;align-items:center;
+    padding:8px;border:1px solid var(--grid);border-radius:9px;margin-bottom:7px;background:var(--page)}
+  .step .n{width:22px;height:22px;border-radius:50%;background:var(--raised);color:var(--text-2);
+    display:grid;place-items:center;font-size:11px;font-weight:650;font-variant-numeric:tabular-nums}
+  .step .abs{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+  /* request log — the actual deliverable for Zenscale */
+  .log{position:sticky;top:74px}
+  .log .entries{max-height:calc(100vh - 200px);overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+  .entry{border:1px solid var(--grid);border-radius:9px;overflow:hidden;background:var(--page)}
+  .entry summary{cursor:pointer;padding:7px 10px;font-size:12px;display:flex;gap:8px;align-items:center;
+    list-style:none}
+  .entry summary::-webkit-details-marker{display:none}
+  .entry .m{font-weight:700;font-size:10.5px;letter-spacing:.5px;padding:1px 6px;border-radius:4px;
+    background:var(--raised);color:var(--text-2)}
+  .entry .m.POST,.entry .m.PUT,.entry .m.PATCH{color:var(--series)}
+  .entry .m.DELETE{color:var(--critical)}
+  .entry .st{margin-left:auto;font-variant-numeric:tabular-nums;font-size:11px}
+  .entry .st.ok{color:var(--good)} .entry .st.bad{color:var(--critical)}
+  .entry pre{margin:0;padding:9px 10px;background:var(--surface);border-top:1px solid var(--grid);
+    font-size:11.5px;line-height:1.5;overflow-x:auto;white-space:pre;color:var(--text-2)}
+  .banner{padding:9px 12px;border-radius:9px;font-size:12.5px;margin-bottom:12px;
+    border:1px solid var(--border);background:var(--page)}
+  .banner.bad{border-color:var(--critical);color:var(--critical)}
+  .banner.warn{border-color:var(--warning)}
+  .hidden{display:none}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>ops-core admin</h1>
+    <div class="sub" id="sub">loading…</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="shadowPill"><span class="dot" id="shadowDot"></span><span id="shadowTxt">—</span></span>
+  <span class="pill">v<span id="version">—</span></span>
+  <label class="row tight" style="font-size:12px;color:var(--text-2)">
+    admin key
+    <input id="key" type="password" placeholder="X-Admin-Key" style="width:170px" autocomplete="off">
+  </label>
+  <button id="reload">Reload</button>
+</header>
+
+<main>
+  <div>
+    <div id="banners"></div>
+
+    <!-- ============================= plans ============================= -->
+    <section class="card">
+      <h2>Who to call, and when</h2>
+      <p class="cap">Each step waits the given number of minutes after the one before it.
+        The absolute time since the loom stopped is shown alongside, because that is what
+        the system actually schedules on.</p>
+      <div class="row" style="margin-bottom:12px">
+        <label class="f">Plan
+          <select id="planSel"></select>
+        </label>
+        <div style="align-self:end;color:var(--muted);font-size:12px" id="planApplies"></div>
+      </div>
+      <div id="steps"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="sm" id="addStep">+ Add step</button>
+        <div class="spacer" style="flex:1"></div>
+        <button class="primary" id="savePlan" disabled>Save plan</button>
+      </div>
+    </section>
+
+    <!-- ============================= teams ============================= -->
+    <section class="card">
+      <h2>Teams and shifts</h2>
+      <p class="cap">Somebody must be on duty for every shift a team gets called on —
+        one person may cover two teams, but nobody covering one is refused.</p>
+      <div id="teams"></div>
+      <div class="row" style="margin-top:12px">
+        <input id="newTeam" placeholder="New team name, e.g. Engineering" style="flex:1">
+        <button id="addTeam">Add team</button>
+      </div>
+    </section>
+
+    <!-- ============================= people ============================ -->
+    <section class="card">
+      <h2>People</h2>
+      <p class="cap">Whoever is reachable on WhatsApp. A placeholder is an invented number
+        from the sample roster — ops-core refuses to run live while any remain.</p>
+      <div id="people"></div>
+      <div class="row" style="margin-top:12px">
+        <input id="newName" placeholder="Name" style="flex:1">
+        <input id="newPhone" placeholder="+91…" style="width:170px">
+        <button id="addPerson">Add person</button>
+      </div>
+    </section>
+
+    <!-- ============================ reasons ============================ -->
+    <section class="card">
+      <h2>Fault types</h2>
+      <p class="cap">Which team owns each fault. The wording and which options appear in the
+        WhatsApp question are fixed by the approved message template and cannot be changed here.</p>
+      <div id="reasons"></div>
+    </section>
+
+    <!-- =========================== simulate ============================ -->
+    <section class="card">
+      <h2>Who gets called right now</h2>
+      <p class="cap">Resolved through the live shift calendar — the fastest way to check a
+        roster change before anyone's phone rings.</p>
+      <div class="row" style="margin-bottom:12px">
+        <label class="f">If this happened
+          <select id="simSel"></select>
+        </label>
+        <button style="align-self:end" id="runSim">Check</button>
+      </div>
+      <div id="sim"></div>
+    </section>
+  </div>
+
+  <!-- ============================ api log ============================== -->
+  <aside class="log">
+    <section class="card">
+      <h2>API calls</h2>
+      <p class="cap">Every request this page makes. This panel is the reference —
+        anything here can be rebuilt in Zenscale from the method, path and body alone.</p>
+      <div class="row" style="margin-bottom:10px">
+        <button class="sm" id="clearLog">Clear</button>
+        <button class="sm" id="copyCurl">Copy last as curl</button>
+      </div>
+      <div class="entries" id="entries"><div class="empty">No calls yet.</div></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+const $ = s => document.querySelector(s);
+const el = (t, c, txt) => { const n = document.createElement(t);
+  if (c) n.className = c; if (txt != null) n.textContent = txt; return n; };
+
+let STATE = null;      // last /api/admin/overview payload
+let LAST = null;       // last request, for copy-as-curl
+
+// The admin key lives only in this tab. It is deliberately not persisted: it is a
+// shared password for the whole plant's paging, and a key sitting in localStorage on a
+// shared shop-floor browser is a worse failure than retyping it.
+const keyOf = () => $("#key").value.trim();
+
+/* ---------------------------------------------------------------- api + logging */
+
+async function api(method, path, body) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (keyOf() && method !== "GET") {
+    headers["X-Admin-Key"] = keyOf();
+    headers["X-Admin-User"] = "admin-demo";
+  }
+  const started = performance.now();
+  let res, payload, status = 0;
+  try {
+    res = await fetch(path, { method, headers,
+      body: body === undefined ? undefined : JSON.stringify(body) });
+    status = res.status;
+    payload = await res.json().catch(() => ({}));
+  } catch (e) {
+    payload = { error: String(e) };
+  }
+  const ms = Math.round(performance.now() - started);
+  LAST = { method, path, body, headers, status };
+  logCall({ method, path, body, status, ms, payload });
+  return { ok: status >= 200 && status < 300, status, payload };
+}
+
+function logCall(c) {
+  const box = $("#entries");
+  if (box.firstElementChild && box.firstElementChild.className === "empty") box.innerHTML = "";
+  const d = el("details", "entry");
+  const s = el("summary");
+  s.append(el("span", "m " + c.method, c.method));
+  s.append(el("span", "mono", c.path));
+  const st = el("span", "st " + (c.status >= 200 && c.status < 300 ? "ok" : "bad"),
+                c.status + " · " + c.ms + "ms");
+  s.append(st);
+  d.append(s);
+  const parts = [];
+  if (c.body !== undefined) parts.push("// request\n" + JSON.stringify(c.body, null, 2));
+  parts.push("// response " + c.status + "\n" + JSON.stringify(c.payload, null, 2));
+  d.append(el("pre", null, parts.join("\n\n")));
+  box.prepend(d);
+}
+
+function asCurl(c) {
+  if (!c) return "";
+  const bits = ["curl -X " + c.method, "'" + location.origin + c.path + "'"];
+  if (c.method !== "GET") {
+    bits.push("-H 'X-Admin-Key: <YOUR_ADMIN_KEY>'");
+    bits.push("-H 'X-Admin-User: <who>'");
+  }
+  if (c.body !== undefined) {
+    bits.push("-H 'Content-Type: application/json'");
+    bits.push("-d '" + JSON.stringify(c.body) + "'");
+  }
+  return bits.join(" \\\n  ");
+}
+
+/* ------------------------------------------------------------------- feedback */
+
+function banner(kind, text) {
+  const b = el("div", "banner " + kind, text);
+  $("#banners").prepend(b);
+  setTimeout(() => b.remove(), 9000);
+}
+
+function handle(r, okMsg) {
+  if (r.ok) { banner("", okMsg); load(); return true; }
+  const p = r.payload || {};
+  let msg = p.error || ("request failed (" + r.status + ")");
+  if (p.problems)     msg += " — " + p.problems.join("; ");
+  if (p.used_by)      msg += " — " + describeUse(p.used_by);
+  if (p.empty_shifts) msg += " — shift " + p.empty_shifts.join(", ") + " would have nobody";
+  if (p.rostered_in)  msg += " — on: " + p.rostered_in.join(", ");
+  if (p.unknown)      msg += " — unknown: " + p.unknown.join(", ");
+  banner("bad", msg);
+  return false;
+}
+
+const describeUse = u => [
+  (u.reasons || []).length ? (u.reasons.length + " fault type(s)") : null,
+  (u.plan_steps || []).length ? (u.plan_steps.length + " escalation step(s)") : null,
+].filter(Boolean).join(" and ");
+
+/* ---------------------------------------------------------------------- render */
+
+async function load() {
+  const r = await api("GET", "/api/admin/overview");
+  if (!r.ok) { banner("bad", "could not load config"); return; }
+  STATE = r.payload;
+  $("#version").textContent = STATE.version;
+  $("#sub").textContent = STATE.department + " · " + STATE.people.length +
+    " people · " + STATE.teams.length + " teams";
+
+  const shadow = STATE.shadow_mode;
+  $("#shadowDot").className = "dot " + (shadow ? "warn" : "ok");
+  $("#shadowTxt").textContent = shadow ? "shadow mode — nothing sends" : "live";
+
+  renderPlans(); renderTeams(); renderPeople(); renderReasons(); renderSimOptions();
+
+  const unrouted = STATE.teams.filter(t => t.targeted && t.empty_shifts.length);
+  if (unrouted.length) {
+    banner("bad", "These teams get called but have empty shifts: " +
+      unrouted.map(t => t.id + " (" + t.empty_shifts.join(",") + ")").join(", "));
+  }
+  if (STATE.people.some(p => p.placeholder)) {
+    banner("warn", "Some people are still sample placeholders — ops-core will refuse to " +
+      "run live until they are replaced with real contacts.");
+  }
+}
+
+/* plans ------------------------------------------------------------------- */
+
+let planDraft = null;
+
+function renderPlans() {
+  const sel = $("#planSel");
+  const keep = sel.value;
+  sel.innerHTML = "";
+  STATE.plans.forEach(p => sel.append(new Option(p.id, p.id)));
+  sel.value = STATE.plans.some(p => p.id === keep) ? keep : STATE.plans[0].id;
+  loadPlanDraft();
+}
+
+function currentPlan() { return STATE.plans.find(p => p.id === $("#planSel").value); }
+
+function loadPlanDraft() {
+  const p = currentPlan();
+  if (!p) return;
+  $("#planApplies").textContent = "applies to: " + p.applies_to;
+  planDraft = p.steps.map(s => ({ notify: s.notify, wait_minutes: s.wait_minutes,
+                                  action: s.action || null }));
+  renderSteps();
+}
+
+function renderSteps() {
+  const box = $("#steps");
+  box.innerHTML = "";
+  const teams = STATE.teams.map(t => t.id);
+  let running = 0;
+
+  planDraft.forEach((s, i) => {
+    running += Number(s.wait_minutes) || 0;
+    const row = el("div", "step");
+    row.append(el("div", "n", String(i + 1)));
+
+    const who = el("select");
+    // "owner" is offered in the operator's words, not the engine's.
+    who.append(new Option("the team that owns this fault", "owner"));
+    teams.forEach(t => who.append(new Option(t, t)));
+    who.value = s.notify;
+    who.onchange = () => { s.notify = who.value; markDirty(); };
+    row.append(who);
+
+    const wrap = el("div", "row tight");
+    const wait = el("input");
+    wait.type = "number"; wait.min = "0"; wait.style.width = "72px";
+    wait.value = s.wait_minutes;
+    wait.oninput = () => { s.wait_minutes = Number(wait.value) || 0; renderSteps(); markDirty(); };
+    wrap.append(wait, el("span", "abs", i === 0 ? "min, immediately" : "min later"));
+    row.append(wrap);
+
+    const right = el("div", "row tight");
+    right.append(el("span", "abs", "= " + running + " min in"));
+    if (s.action === "ask_reason") right.append(el("span", "tag", "asks the reason"));
+    const del = el("button", "sm danger", "Remove");
+    del.onclick = () => { planDraft.splice(i, 1); renderSteps(); markDirty(); };
+    right.append(del);
+    row.append(right);
+
+    box.append(row);
+  });
+  if (!planDraft.length) box.append(el("div", "empty", "No steps — nobody would be called."));
+}
+
+function markDirty() { $("#savePlan").disabled = !keyOf(); }
+
+/* teams ------------------------------------------------------------------- */
+
+function renderTeams() {
+  const box = $("#teams");
+  box.innerHTML = "";
+  const table = el("table");
+  const head = el("tr");
+  ["Team", "Shift A", "Shift B", "Shift C", "Called for", ""].forEach(h =>
+    head.append(el("th", null, h)));
+  table.append(el("thead")).firstChild.append(head);
+  const body = el("tbody");
+
+  STATE.teams.forEach(t => {
+    const tr = el("tr");
+    const nameCell = el("td");
+    nameCell.append(el("strong", null, t.id));
+    if (t.targeted) nameCell.append(document.createTextNode(" "),
+      el("span", "tag ok", "in use"));
+    tr.append(nameCell);
+
+    const isAll = "all" in t.roster;
+    ["A", "B", "C"].forEach(k => {
+      const td = el("td");
+      const sel = el("select");
+      sel.multiple = true;
+      sel.size = 1;
+      sel.style.minWidth = "108px";
+      STATE.people.forEach(p => {
+        const o = new Option(p.name, p.id);
+        o.selected = (isAll ? t.roster.all : (t.roster[k] || [])).includes(p.id);
+        sel.append(o);
+      });
+      sel.onchange = () => saveRoster(t, sel, k, isAll);
+      td.append(sel);
+      if (!isAll && !(t.roster[k] || []).length)
+        td.append(el("div", "tag " + (t.targeted ? "bad" : "warn"), "nobody"));
+      tr.append(td);
+    });
+
+    tr.append(el("td", null, describeUse(t.used_by) || "—"));
+
+    const act = el("td");
+    const del = el("button", "sm danger", "Delete");
+    del.disabled = !!(t.used_by.reasons.length || t.used_by.plan_steps.length);
+    del.title = del.disabled ? "still routed to — move those over first" : "";
+    del.onclick = async () => {
+      if (!confirm("Delete team " + t.id + "?")) return;
+      handle(await api("DELETE", "/api/admin/teams/" + t.id), "Team deleted");
+    };
+    act.append(del);
+    tr.append(act);
+    body.append(tr);
+  });
+  table.append(body);
+  box.append(table);
+}
+
+async function saveRoster(team, sel, shift, isAll) {
+  const picked = [...sel.selectedOptions].map(o => o.value);
+  const members = isAll ? { all: picked }
+    : { A: team.roster.A || [], B: team.roster.B || [], C: team.roster.C || [] };
+  if (!isAll) members[shift] = picked;
+  handle(await api("PUT", "/api/admin/roster/" + team.id, { members }),
+         "Roster updated for " + team.id);
+}
+
+/* people ------------------------------------------------------------------ */
+
+function renderPeople() {
+  const box = $("#people");
+  box.innerHTML = "";
+  const table = el("table");
+  const head = el("tr");
+  ["Name", "WhatsApp", "Reached via", "On teams", ""].forEach(h => head.append(el("th", null, h)));
+  table.append(el("thead")).firstChild.append(head);
+  const body = el("tbody");
+
+  STATE.people.forEach(p => {
+    const tr = el("tr");
+    const n = el("td");
+    n.append(document.createTextNode(p.name));
+    if (p.placeholder) n.append(document.createTextNode(" "), el("span", "tag warn", "sample"));
+    tr.append(n);
+
+    const phoneCell = el("td");
+    const phone = el("input");
+    phone.value = p.whatsapp || "";
+    phone.placeholder = "+91…";
+    phone.style.width = "150px";
+    phone.onchange = async () => {
+      handle(await api("PATCH", "/api/admin/people/" + p.id, { whatsapp: phone.value.trim() }),
+             "Updated " + p.name);
+    };
+    phoneCell.append(phone);
+    tr.append(phoneCell);
+
+    tr.append(el("td", null, p.channel));
+    tr.append(el("td", null, p.rostered_in.join(", ") || "—"));
+
+    const act = el("td");
+    const del = el("button", "sm danger", "Remove");
+    del.disabled = p.rostered_in.length > 0;
+    del.title = del.disabled ? "on a roster — take them off first" : "";
+    del.onclick = async () => {
+      if (!confirm("Remove " + p.name + "?")) return;
+      handle(await api("DELETE", "/api/admin/people/" + p.id), "Removed " + p.name);
+    };
+    act.append(del);
+    tr.append(act);
+    body.append(tr);
+  });
+  table.append(body);
+  box.append(table);
+}
+
+/* reasons ----------------------------------------------------------------- */
+
+function renderReasons() {
+  const box = $("#reasons");
+  box.innerHTML = "";
+  const table = el("table");
+  const head = el("tr");
+  ["Fault", "Owned by", "In the WhatsApp question"].forEach(h => head.append(el("th", null, h)));
+  table.append(el("thead")).firstChild.append(head);
+  const body = el("tbody");
+
+  STATE.reasons.forEach(r => {
+    const tr = el("tr");
+    tr.append(el("td", null, r.label));
+
+    const td = el("td");
+    if (r.ticketable) {
+      const sel = el("select");
+      STATE.teams.forEach(t => sel.append(new Option(t.id, t.id)));
+      sel.value = r.owner || "";
+      sel.onchange = async () => {
+        handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
+                         { owner: sel.value }), "Reassigned " + r.label);
+      };
+      td.append(sel);
+    } else {
+      td.append(el("span", "tag", "no ticket"));
+    }
+    tr.append(td);
+    tr.append(el("td", null, r.in_prompt ? "yes (locked)" : "no"));
+    body.append(tr);
+  });
+  table.append(body);
+  box.append(table);
+  box.append(el("div", "cap",
+    STATE.notes ? STATE.notes.prompt_list_locked : ""));
+}
+
+/* simulate ---------------------------------------------------------------- */
+
+function renderSimOptions() {
+  const sel = $("#simSel");
+  sel.innerHTML = "";
+  sel.append(new Option("a loom stops, reason not given yet", ""));
+  STATE.reasons.filter(r => r.ticketable)
+    .forEach(r => sel.append(new Option(r.label, r.code)));
+}
+
+async function runSim() {
+  const code = $("#simSel").value;
+  const r = await api("GET", "/api/admin/simulate" + (code ? "?reason=" + encodeURIComponent(code) : ""));
+  const box = $("#sim");
+  box.innerHTML = "";
+  if (!r.ok) { box.append(el("div", "empty", "simulation failed")); return; }
+  const d = r.payload;
+
+  box.append(el("div", "cap", "shift " + (d.shift || "?") + " · plan: " + d.plan +
+    (d.shadow_mode ? " · shadow mode, nothing would actually send" : "")));
+
+  const table = el("table");
+  const head = el("tr");
+  ["", "When", "Who", ""].forEach(h => head.append(el("th", null, h)));
+  table.append(el("thead")).firstChild.append(head);
+  const body = el("tbody");
+  d.steps.forEach(s => {
+    const tr = el("tr");
+    tr.append(el("td", null, String(s.step)));
+    tr.append(el("td", null, s.after_minutes === 0 ? "immediately"
+                                                  : s.after_minutes + " min in"));
+    tr.append(el("td", null, s.recipients.map(p => p.name).join(", ") || "—"));
+    const t = el("td");
+    if (s.unrouted) t.append(el("span", "tag bad", "nobody"));
+    else if (s.action === "ask_reason") t.append(el("span", "tag", "asks the reason"));
+    tr.append(t);
+    body.append(tr);
+  });
+  table.append(body);
+  box.append(table);
+  if (d.any_unrouted) banner("bad", "At least one step has nobody to call.");
+}
+
+/* wiring ------------------------------------------------------------------ */
+
+$("#reload").onclick = load;
+$("#key").oninput = () => { $("#savePlan").disabled = !keyOf(); };
+$("#planSel").onchange = loadPlanDraft;
+$("#addStep").onclick = () => {
+  planDraft.push({ notify: "owner", wait_minutes: 15, action: null });
+  renderSteps(); markDirty();
+};
+$("#savePlan").onclick = async () => {
+  handle(await api("PUT", "/api/admin/plans/" + $("#planSel").value, { steps: planDraft }),
+         "Plan saved");
+};
+$("#addTeam").onclick = async () => {
+  const name = $("#newTeam").value.trim();
+  if (!name) return;
+  if (handle(await api("POST", "/api/admin/teams", { name, members: { A: [], B: [], C: [] } }),
+             "Team created")) $("#newTeam").value = "";
+};
+$("#addPerson").onclick = async () => {
+  const name = $("#newName").value.trim(), whatsapp = $("#newPhone").value.trim();
+  if (!name) return;
+  if (handle(await api("POST", "/api/admin/people", { name, whatsapp }), "Person added")) {
+    $("#newName").value = ""; $("#newPhone").value = "";
+  }
+};
+$("#runSim").onclick = runSim;
+$("#clearLog").onclick = () => { $("#entries").innerHTML = '<div class="empty">No calls yet.</div>'; };
+$("#copyCurl").onclick = async () => {
+  if (!LAST) return;
+  try { await navigator.clipboard.writeText(asCurl(LAST)); banner("", "curl copied"); }
+  catch { banner("bad", "clipboard blocked — the call is in the log above"); }
+};
+
+load();
+</script>
+</body>
+</html>
