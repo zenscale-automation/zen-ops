@@ -132,8 +132,14 @@ class WhatsAppNotifier:
                 or (payload.get("asset_ref") or "").replace("_", " ").title()
                 or f"A {generic}")
 
-    def template_for(self, payload: dict) -> tuple[str, list]:
-        """(template_id, positional variables) for this payload type.
+    def template_for(self, payload: dict) -> tuple[str, list, list]:
+        """(template_id, body variables, header variables) for this payload type.
+
+        Header values travel SEPARATELY as template_header, never prepended to the
+        body. Meta counts parameters per component and rejects a merged list with
+        132000; PickyAssist counts distinct variables and rejects it from the other
+        side. Verified against the live template: only the reason question has a
+        header, carrying the asset name.
 
         The order is the order the variables appear in the approved template. There are
         no names — get the order wrong and the message reads plausibly and says something
@@ -149,7 +155,7 @@ class WhatsAppNotifier:
                 return template, [
                     self._asset_label(payload),                       # {{1}} Loom 91
                     payload.get("reason_label") or "a fault",         # {{2}} Electrical fault
-                ]
+                ], []
         if payload.get("type") == "reason_prompt":
             # The gap travels IN THE PAYLOAD, computed by escalation.fire from the ladder
             # that scheduled this prompt — one source for the timing and the promise.
@@ -163,10 +169,10 @@ class WhatsAppNotifier:
                                   if r.get("action") == "ask_reason"), 0)
                 reprompt = _minutes_to_next_step(ladder, first_ask)
             return self.prompt_template, [
-                self._asset_label(payload),          # {{1}} Weaving Loom 91
-                self._minutes_down(payload),         # {{2}} 17
-                str(int(reprompt or 0)),             # {{3}} 25
-            ]
+                self._asset_label(payload),          # body {{1}} Loom 91
+                self._minutes_down(payload),         # body {{2}} 17
+                str(int(reprompt or 0)),             # body {{3}} 25
+            ], [self._asset_label(payload)]          # header: "Loom 91 stopped"
         # Everything else — escalation pages AND the hours-estimate question. The estimate
         # question virtually always rides the free-text path (build() checks the window
         # first, and it is sent seconds after the person's own reply, which opens it);
@@ -177,7 +183,7 @@ class WhatsAppNotifier:
             self._asset_label(payload),              # {{1}} Weaving Loom 91
             payload.get("reason_label") or "Not yet reported",   # {{2}} Electrical fault
             self._minutes_down(payload),             # {{3}} 32
-        ]
+        ], []
 
     # --- payload shaping -----------------------------------------------------
 
@@ -189,14 +195,16 @@ class WhatsAppNotifier:
         return {"token": self.token, "application": str(self.application), "data": [entry]}
 
     def _template_body(self, to: str, payload: dict) -> dict:
-        template_id, values = self.template_for(payload)
+        template_id, values, header = self.template_for(payload)
+        entry = {"number": to, "template_message": values, "language": self.language}
+        if header:
+            entry["template_header"] = header
         return {
             "token": self.token,
             "application": int(self.application),
             "template_id": template_id,
             "language": self.language,
-            "template_globalmessage": values,
-            "data": [{"number": to, "template_message": values}],
+            "data": [entry],
         }
 
     @staticmethod
@@ -208,7 +216,7 @@ class WhatsAppNotifier:
 
     def build(self, recipient: str, payload: dict) -> dict:
         to = normalise_msisdn(recipient)
-        template_id, _ = self.template_for(payload)
+        template_id, _, _ = self.template_for(payload)
         # No approved template for this message type yet? Free text is the only thing
         # left to try. It fails with 802 outside a window, which is at least a loud,
         # attributable failure rather than sending nothing.

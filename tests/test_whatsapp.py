@@ -92,10 +92,12 @@ def test_with_no_approved_template_it_still_tries_free_text(cfg, monkeypatch):
 
 def test_prompt_variables_are_positional_and_in_template_order(n, cfg):
     opened = clock.plus_seconds(-17 * 60)
-    tid, values = n.template_for({"type": "reason_prompt", "asset_ref": "loom_91",
-                                  "opened_at": opened, "reprompt_minutes": 15})
+    tid, values, header = n.template_for({"type": "reason_prompt", "asset_ref": "loom_91",
+                                          "opened_at": opened, "reprompt_minutes": 15})
     assert tid == PROMPT_TID
     assert values == ["Loom 91", "17", "15"]
+    assert header == ["Loom 91"], \
+        "the approved template has a text header carrying the asset name"
 
 
 def test_minutes_are_recomputed_at_send_time_not_at_enqueue(n, cfg):
@@ -109,15 +111,17 @@ def test_minutes_are_recomputed_at_send_time_not_at_enqueue(n, cfg):
 
 
 def test_escalation_variables_name_the_reason(n, cfg):
-    tid, values = n.template_for({"type": "escalation", "asset_label": "Loom 94",
-                                  "reason_label": "Electrical fault", "minutes_down": 32})
+    tid, values, header = n.template_for({"type": "escalation", "asset_label": "Loom 94",
+                                          "reason_label": "Electrical fault",
+                                          "minutes_down": 32})
     assert tid == ESC_TID
     assert values == ["Loom 94", "Electrical fault", "32"]
+    assert header == [], "the escalation template has no header"
 
 
 def test_an_escalation_with_no_reason_yet_still_reads_sensibly(n, cfg):
-    _, values = n.template_for({"type": "escalation", "asset_label": "Loom 94",
-                                "minutes_down": 12})
+    _, values, _ = n.template_for({"type": "escalation", "asset_label": "Loom 94",
+                                   "minutes_down": 12})
     assert values[1] == "Not yet reported"
 
 
