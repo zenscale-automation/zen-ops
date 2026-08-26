@@ -368,6 +368,53 @@ def whatsapp():
     return result
 
 
+@bp.post("/webhook/events")
+def provider_events():
+    """PickyAssist's Event Webhook — delivery reports (event_id 1).
+
+    The push API answers 100 when a message is QUEUED; Meta's verdict lands here later.
+    Without this, a message that dies after acceptance is invisible outside a web panel:
+    the outbox says sent, health says ok, and nobody is called. A failure report flips
+    the outbox row to 'failed', which the existing outbox_failed_1h health metric counts
+    — so delivery breakage surfaces programmatically, not by someone reading a log.
+    """
+    data = request.get_json(silent=True) or {}
+    if str(data.get("event_id")) != "1":
+        return jsonify({"ignored": True}), 200
+
+    updated = failed = 0
+    for row in (data.get("data") or []):
+        msg_id = str(row.get("msg_id") or "")
+        if not msg_id:
+            continue
+        status = str(row.get("status"))
+        # 1=Delivered, 3=Read count as delivered; 2=Failed, 5=Refunded as failed;
+        # 0/4 are interim and recorded as-is without judgement.
+        verdict = {"1": "delivered", "3": "read", "2": "failed",
+                   "5": "failed", "4": "submitted", "0": "unknown"}.get(status, status)
+        error = (str(row.get("error_message") or "")[:255]) or None
+        # db.execute returns lastrowid (0 for UPDATEs) — rowcount needs the cursor.
+        with db.transaction() as c:
+            if verdict == "failed":
+                # status='failed' is what outbox.failed_since counts, and next_try_at is
+                # the timestamp that metric windows on — repurposed here as "failed at".
+                n = c.execute(
+                    "UPDATE outbox SET delivery_status=?, delivery_error=?,"
+                    " status='failed', next_try_at=? WHERE provider_msg_id=?",
+                    (verdict, error, clock.now_iso(), msg_id)).rowcount
+                if n:
+                    failed += 1
+                    log.error("delivery FAILED for provider msg %s: %s — the recipient "
+                              "did not get this message", msg_id,
+                              error or "(no reason given)")
+            else:
+                n = c.execute(
+                    "UPDATE outbox SET delivery_status=? WHERE provider_msg_id=?",
+                    (verdict, msg_id)).rowcount
+        updated += 1 if n else 0
+    return jsonify({"ok": True, "matched": updated, "failed": failed}), 200
+
+
 @bp.post("/webhook/gchat")
 def gchat():
     if not _verify("GCHAT_WEBHOOK_SECRET"):
