@@ -26,6 +26,12 @@ log = logging.getLogger("ops.config")
 # rebuilding it mid-shift discards the API cursor and the per-loom state. Source
 # changes stay a restart.
 EDITABLE_SCOPES = ("reasons", "routing", "escalation")
+# `source` is a half-member: its override is STORED like the others and applied at BOOT,
+# but never hot-swapped — the feed adapter reads these settings once when it is built,
+# so a live swap would either silently do nothing or force an adapter rebuild that
+# throws away the feed cursor and every machine's last-known state. Restart-required is
+# the honest semantics, and the admin API says so on every read.
+BOOT_SCOPES = EDITABLE_SCOPES + ("source",)
 
 _reload_lock = threading.Lock()
 
@@ -337,8 +343,9 @@ def load() -> Config:
 
 
 def apply_overrides(cfg: Config, overrides: dict) -> None:
-    """Layer stored patches over the YAML, in place."""
-    for scope in EDITABLE_SCOPES:
+    """Layer stored patches over the YAML, in place. Runs at BOOT, so it includes the
+    source scope; reload_into (the runtime path) deliberately does not."""
+    for scope in BOOT_SCOPES:
         patch = overrides.get(scope)
         if patch:
             setattr(cfg, scope, merge_patch(getattr(cfg, scope), patch))

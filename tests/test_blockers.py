@@ -250,3 +250,89 @@ def test_a_retired_machine_that_reports_again_is_fully_back(cfg):
         incidents.ensure_asset(c, cfg, "loom_93")     # the feed reports it again
     row = db.query_one("SELECT active FROM assets WHERE id=?", (aid,))
     assert row["active"] == 1
+
+
+# --- the panel's new surface: guards on the newly editable groups ----------------
+
+def _admin_client(cfg, monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_API_KEY", "k")
+    from app.main import create_app
+    return create_app(cfg=cfg, start_workers=False).test_client()
+
+
+def _h():
+    return {"X-Admin-Key": "k", "X-Admin-User": "test"}
+
+
+def test_feed_settings_require_dev_mode_and_wait_for_restart(cfg, monkeypatch):
+    client = _admin_client(cfg, monkeypatch)
+    r = client.put("/api/admin/feed", headers=_h(), json={"rpm_threshold": 35})
+    assert r.status_code == 403 and "dev mode" in r.get_json()["error"]
+
+    r = client.put("/api/admin/feed", headers=_h(),
+                   json={"dev_mode": True, "rpm_threshold": 35})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["restart_required"] is True
+
+    # the RUNNING config is untouched — the adapter read it at boot
+    assert cfg.source["settings"]["stop_when"]["lt"] == 40
+    # but the pending view shows it, and one field wrote BOTH sides of the threshold
+    g = client.get("/api/admin/feed", headers=_h()).get_json()
+    assert g["pending"]["rpm_threshold"] == 35
+    assert g["restart_required"] is True
+    import json as _json
+    stored = _json.loads(db.query_one(
+        "SELECT patch FROM config_overrides WHERE scope='source'")["patch"])
+    assert stored["settings"]["stop_when"]["lt"] == 35
+    assert stored["settings"]["resolve_when"]["gte"] == 35, \
+        "stop and resolve must move together or a dead band opens between them"
+
+
+def test_a_new_fault_type_cannot_claim_a_place_in_the_frozen_question(cfg, monkeypatch):
+    client = _admin_client(cfg, monkeypatch)
+    r = client.post("/api/admin/reasons", headers=_h(),
+                    json={"name": "Compressor down", "show_in_prompt": True})
+    assert r.status_code == 409 and "template" in r.get_json()["error"]
+
+    r = client.post("/api/admin/reasons", headers=_h(),
+                    json={"name": "Compressor down", "ticketable": True,
+                          "owner": "engineering"})
+    assert r.status_code == 200
+    assert r.get_json()["code"] == "weaving.compressor_down"
+
+
+def test_a_fault_history_has_touched_cannot_be_deleted(cfg, monkeypatch):
+    client = _admin_client(cfg, monkeypatch)
+    client.post("/api/admin/reasons", headers=_h(),
+                json={"name": "Oiling", "ticketable": False})
+    inc = incidents.open_incident(cfg, "loom_7", "STOPPED")
+    incidents.set_reason(cfg, inc["id"], "weaving.oiling", method="reply", actor="t")
+
+    r = client.delete("/api/admin/reasons/weaving.oiling", headers=_h())
+    assert r.status_code == 409
+    assert "history" in r.get_json()["error"]
+
+
+def test_fleet_fraction_that_swallows_faults_needs_an_acknowledgement(cfg, monkeypatch):
+    client = _admin_client(cfg, monkeypatch)
+    with db.transaction() as c:
+        for ref in ("loom_1", "loom_2", "loom_3", "loom_4"):
+            incidents.ensure_asset(c, cfg, ref)
+
+    r = client.put("/api/admin/detection", headers=_h(), json={"fleet_fraction": 0.3})
+    assert r.status_code == 409
+    assert r.get_json()["acknowledge_with"] == "fleet_threshold_collapses"
+
+    r = client.put("/api/admin/detection", headers=_h(),
+                   json={"fleet_fraction": 0.3,
+                         "acknowledge": ["fleet_threshold_collapses"]})
+    assert r.status_code == 200
+
+
+def test_backstop_must_be_reachable(cfg, monkeypatch):
+    client = _admin_client(cfg, monkeypatch)
+    r = client.put("/api/admin/backstop", headers=_h(), json={"person_id": "ghost"})
+    assert r.status_code == 404
+    r = client.put("/api/admin/backstop", headers=_h(), json={"person_id": "shailendra"})
+    assert r.status_code == 200

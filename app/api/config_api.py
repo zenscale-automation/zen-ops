@@ -96,17 +96,9 @@ def patch_scope(scope: str):
     ok, why = _authorised()
     if not ok:
         return jsonify({"error": why}), 403
-    if scope == "source":
-        return jsonify({
-            "error": "source is restart-only",
-            "detail": "source settings are read once when the adapter is built; "
-                      "changing them at runtime would appear to work and do nothing, "
-                      "and rebuilding the adapter mid-shift discards the API cursor "
-                      "and every asset's last-known state. Edit source.yaml and restart.",
-        }), 409
-    if scope not in config.EDITABLE_SCOPES:
+    if scope not in config.BOOT_SCOPES:
         return jsonify({"error": f"unknown scope '{scope}'",
-                        "editable": list(config.EDITABLE_SCOPES)}), 404
+                        "editable": list(config.BOOT_SCOPES)}), 404
 
     patch = request.get_json(silent=True)
     if not isinstance(patch, dict):
@@ -139,6 +131,18 @@ def patch_scope(scope: str):
                    detail={"scope": scope, "patch": patch},
                    department=cfg.department, at=now)
 
+    if scope == "source":
+        # Stored and validated, applied at the next boot. The feed adapter reads these
+        # once when it is built; pretending a live swap happened would be the "setting
+        # that quietly does nothing" failure this API exists to avoid.
+        return jsonify({"ok": True, "scope": scope, "version": cfg.version,
+                        "restart_required": True,
+                        "note": "saved — takes effect when ops-core restarts"})
+    if scope == "source":
+        return jsonify({"ok": True, "scope": scope, "version": cfg.version,
+                        "restart_required": True,
+                        "note": "override removed — the YAML values return at the "
+                                "next restart"})
     config.reload_into(cfg, overrides)
     return jsonify({"ok": True, "scope": scope, "version": cfg.version,
                     "effective": getattr(cfg, scope)})
@@ -149,7 +153,7 @@ def delete_scope(scope: str):
     ok, why = _authorised()
     if not ok:
         return jsonify({"error": why}), 403
-    if scope not in config.EDITABLE_SCOPES:
+    if scope not in config.BOOT_SCOPES:
         return jsonify({"error": f"unknown scope '{scope}'"}), 404
 
     cfg = current_app.config["OPS_CFG"]

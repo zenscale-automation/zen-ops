@@ -149,6 +149,17 @@
     display:grid;place-items:center;font-size:11px;font-weight:700}
   .abs{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;
+    border-bottom:1px solid var(--border);padding-bottom:0}
+  .tabs a{display:inline-block;padding:8px 14px;font-size:13.5px;color:var(--text-2);
+    text-decoration:none;border:1px solid transparent;border-bottom:none;
+    border-radius:8px 8px 0 0;margin-bottom:-1px}
+  .tabs a:hover{color:var(--text)}
+  .tabs a.on{background:var(--surface);border-color:var(--border);color:var(--text);
+    font-weight:600}
+  .page{display:none}
+  .page.on{display:block}
+
   .banner{padding:11px 14px;border-radius:9px;font-size:13.5px;margin-bottom:11px;
     border:1px solid var(--border);background:var(--page)}
   .banner.bad{border-color:var(--bad);background:var(--bad-bg);color:var(--bad)}
@@ -191,6 +202,16 @@
     <div id="locked"></div>
     <div id="app" style="display:none">
 
+      <nav class="tabs" id="tabs" aria-label="Sections">
+        <a href="#overview">Overview</a>
+        <a href="#people">People &amp; teams</a>
+        <a href="#escalation">Escalation &amp; timing</a>
+        <a href="#faults">Fault types</a>
+        <a href="#detection">Detection</a>
+        <a href="#feed">Feed</a>
+      </nav>
+
+      <div class="page" data-page="overview">
       <section>
         <h2>Right now</h2>
         <div class="headline" id="headline"></div>
@@ -198,6 +219,9 @@
         <div id="nextSteps"></div>
       </section>
 
+      </div>
+
+      <div class="page" data-page="people">
       <section>
         <h2>Who gets called</h2>
         <div id="teams"></div>
@@ -211,6 +235,16 @@
         </details>
       </section>
 
+      <section>
+        <h2>Backstop</h2>
+        <p class="cap">Anything that cannot be routed &mdash; a team with nobody on the
+          shift, a step naming a team that has gone &mdash; falls back to this person.
+          The last line before a fault reaches nobody.</p>
+        <div class="row" id="backstop"></div>
+      </section>
+      </div>
+
+      <div class="page" data-page="escalation">
       <section>
         <h2>When they get called</h2>
         <p class="cap">Each step waits that many minutes after the one before it. A machine
@@ -229,11 +263,15 @@
         </div>
       </section>
 
+      </div>
+
+      <div class="page" data-page="faults">
       <section>
         <h2>Fault types</h2>
-        <p class="cap">Which team handles each fault. The wording, and which options appear
-          in the WhatsApp question, are fixed by the approved message template and cannot be
-          changed here.</p>
+        <p class="cap">Everything the approved WhatsApp template does not freeze is
+          editable: the owning team, the typical repair time, whether a ticket opens, and
+          the reply words that map to each fault. The wording of the question and which
+          options appear in it are the template's and stay locked.</p>
         <div id="reasons"></div>
         <details class="more">
           <summary>Fault types that are recorded but never assigned to anybody</summary>
@@ -241,6 +279,43 @@
         </details>
       </section>
 
+      <section>
+        <h2>Add a fault type</h2>
+        <p class="cap">New fault types stay out of the WhatsApp question &mdash; its
+          options are frozen in the template &mdash; but supervisors can reply with the
+          name, detection rules can file stops under it, and it can own tickets.</p>
+        <div class="row">
+          <input id="nrName" placeholder="Name, e.g. Compressor down" style="flex:1">
+          <label class="row" style="font-size:13px;gap:5px">
+            <input type="checkbox" id="nrTicket" checked> opens a ticket
+          </label>
+          <select id="nrOwner"></select>
+          <button id="nrAdd">Add</button>
+        </div>
+      </section>
+      </div>
+
+      <div class="page" data-page="detection">
+      <section>
+        <h2>Stop detection</h2>
+        <p class="cap">The rules that file a stop automatically before anybody is asked
+          &mdash; power cuts, shift changeovers, short stops. First match wins.</p>
+        <div id="detection"></div>
+      </section>
+      </div>
+
+      <div class="page" data-page="feed">
+      <section>
+        <h2>Machine feed</h2>
+        <p class="cap">The connection to the machines themselves. These are read once
+          when the service starts, so a change here waits for a restart &mdash; and a
+          wrong number quietly redefines what a &ldquo;stop&rdquo; is, which every figure
+          downstream inherits. That is why this page asks first.</p>
+        <div id="feed"></div>
+      </section>
+      </div>
+
+      <div class="page" data-page="escalation">
       <section>
         <h2>Shift times and thresholds</h2>
         <p class="cap">Shift times decide who is on duty at 3am, and are also what the
@@ -257,6 +332,7 @@
           <button class="primary" id="saveSettings" disabled>Save thresholds</button>
         </div>
       </section>
+      </div>
 
     </div>
   </div>
@@ -413,6 +489,9 @@ async function load() {
   render();
   loadShifts();
   loadSettings();
+  loadDetection();
+  loadFeed();
+  showTab();
 }
 
 function showLocked(why) {
@@ -435,8 +514,8 @@ async function refreshSim() {
 function render() {
   if (!STATE) return;
   renderHeader(); renderHeadline(); renderFacts(); renderNextSteps();
-  renderTeams(); renderPeople();
-  renderPlans(); renderReasons();
+  renderTeams(); renderPeople(); renderBackstop();
+  renderPlans(); renderReasons(); renderNewReasonOwner();
 }
 
 /* --------------------------------------------------------------------- header */
@@ -748,6 +827,262 @@ function renderPeople() {
   box.append(t);
 }
 
+/* ----------------------------------------------------------------- backstop */
+
+function renderBackstop() {
+  var box = $("#backstop");
+  if (!box) return;
+  box.innerHTML = "";
+  var sel = el("select");
+  STATE.people.forEach(function (p) {
+    sel.append(new Option(p.name + (p.whatsapp ? " (" + p.whatsapp + ")" : ""), p.id));
+  });
+  sel.value = STATE.backstop || "";
+  sel.setAttribute("aria-label", "backstop person");
+  sel.onchange = async function () {
+    var who = STATE.people.filter(function (p) { return p.id === sel.value; })[0];
+    if (!confirm("Unroutable faults will fall back to "
+        + (who ? who.name : sel.value) + ". Continue?")) return render();
+    handle(await api("PUT", "/api/admin/backstop", { person_id: sel.value }),
+      "Backstop updated");
+  };
+  box.append(sel);
+}
+
+/* ------------------------------------------------------- new fault type form */
+
+function renderNewReasonOwner() {
+  var sel = $("#nrOwner");
+  if (!sel) return;
+  sel.innerHTML = "";
+  STATE.teams.forEach(function (t) { sel.append(new Option("owned by " + t.id, t.id)); });
+}
+
+/* ---------------------------------------------------------------- detection */
+
+var detectionDraft = null;
+
+async function loadDetection() {
+  var r = await api("GET", "/api/admin/detection");
+  if (!r.ok) return;
+  var d = r.payload;
+  detectionDraft = { fleet_fraction: d.fleet_fraction,
+                     rules: d.rules.map(function (x) { return Object.assign({}, x); }) };
+  var box = $("#detection");
+  box.innerHTML = "";
+
+  var frac = el("div", "row");
+  var fl = el("label", "f", "Fleet-wide means this share stopped together");
+  var fi = el("input");
+  fi.type = "number"; fi.min = "0.1"; fi.max = "1"; fi.step = "0.05";
+  fi.style.width = "80px"; fi.value = d.fleet_fraction;
+  var preview = el("span", "abs",
+    "= " + d.fleet_threshold_now + " of " + d.active_machines + " machines now");
+  fi.oninput = function () {
+    detectionDraft.fleet_fraction = Number(fi.value);
+    var thr = Math.max(2, Math.ceil(d.active_machines * (Number(fi.value) || 1)));
+    preview.textContent = "= " + thr + " of " + d.active_machines + " machines now";
+    $("#saveDetection").disabled = !keyOf();
+  };
+  var fw = el("div", "row"); fw.append(fi, preview); fl.append(fw); frac.append(fl);
+  box.append(frac);
+  box.append(el("p", "cap",
+    "Careful low: stops classed as a power cut page NOBODY, so a threshold that two "
+    + "ordinary faults can reach together silently swallows both."));
+
+  var list = el("div"); list.id = "detRules";
+  detectionDraft.rules.forEach(function (rule, i) {
+    list.append(detectionRow(rule, i, d.rule_kinds));
+  });
+  box.append(list);
+
+  var actions = el("div", "row");
+  actions.style.marginTop = "10px";
+  var add = el("button", "sm", "Add a rule");
+  add.onclick = function () {
+    detectionDraft.rules.push({ code: (STATE.reasons[0] || {}).code,
+                                kind: "duration_under", window: 120 });
+    loadDetectionRedraw(d);
+    $("#saveDetection").disabled = !keyOf();
+  };
+  var save = el("button", "primary", "Save detection");
+  save.id = "saveDetection"; save.disabled = true;
+  save.onclick = async function () {
+    var body = { fleet_fraction: detectionDraft.fleet_fraction,
+                 rules: detectionDraft.rules };
+    var r2 = await api("PUT", "/api/admin/detection", body);
+    if (!r2.ok && (r2.payload || {}).acknowledge_with) {
+      if (confirm((r2.payload.error || "") + "\n\nSave anyway?")) {
+        body.acknowledge = [r2.payload.acknowledge_with];
+        r2 = await api("PUT", "/api/admin/detection", body);
+      }
+    }
+    handle(r2, "Detection saved");
+  };
+  var spacer = el("div"); spacer.style.flex = "1";
+  actions.append(add, spacer, save);
+  box.append(actions);
+}
+
+function loadDetectionRedraw(d) {
+  var list = $("#detRules");
+  list.innerHTML = "";
+  detectionDraft.rules.forEach(function (rule, i) {
+    list.append(detectionRow(rule, i, d.rule_kinds));
+  });
+}
+
+function detectionRow(rule, i, kinds) {
+  var row = el("div", "step");
+  row.style.gridTemplateColumns = "26px 1fr 1fr 150px auto";
+  row.append(el("div", "n", String(i + 1)));
+
+  var code = el("select");
+  STATE.reasons.forEach(function (r) { code.append(new Option(r.label, r.code)); });
+  code.value = rule.code;
+  code.onchange = function () { rule.code = code.value; $("#saveDetection").disabled = !keyOf(); };
+  row.append(code);
+
+  var kind = el("select");
+  var names = { fleet_stop: "whole fleet stops together",
+                fleet_stop_at_boundary: "fleet stops at a shift change",
+                duration_under: "stop shorter than" };
+  Object.keys(kinds).forEach(function (k) { kind.append(new Option(names[k] || k, k)); });
+  kind.value = rule.kind;
+  kind.onchange = function () { rule.kind = kind.value; $("#saveDetection").disabled = !keyOf(); };
+  row.append(kind);
+
+  var ww = el("div", "row");
+  var w = el("input");
+  w.type = "number"; w.style.width = "76px"; w.value = rule.window;
+  w.oninput = function () { rule.window = Number(w.value); $("#saveDetection").disabled = !keyOf(); };
+  var unit = { fleet_stop: "seconds apart", fleet_stop_at_boundary: "min of boundary",
+               duration_under: "seconds" }[rule.kind] || "";
+  ww.append(w, el("span", "abs", unit));
+  row.append(ww);
+
+  var del = el("button", "sm danger", "Remove");
+  del.onclick = function () {
+    detectionDraft.rules.splice(i, 1);
+    loadDetection();
+    $("#saveDetection").disabled = !keyOf();
+  };
+  row.append(del);
+  return row;
+}
+
+/* --------------------------------------------------------------------- feed */
+
+var DEV_MODE = false;
+var feedDraft = null;
+
+async function loadFeed() {
+  var r = await api("GET", "/api/admin/feed");
+  if (!r.ok) return;
+  var d = r.payload;
+  var box = $("#feed");
+  box.innerHTML = "";
+
+  if (d.restart_required) {
+    var b = el("div", "banner warn");
+    b.append(el("strong", null, "Saved changes are waiting for a restart. "));
+    b.append(document.createTextNode(
+      "The running values below stay in force until ops-core restarts."));
+    box.append(b);
+  }
+
+  if (!DEV_MODE) {
+    var t = feedTable(d.running, d.pending);
+    box.append(t);
+    var gate = el("button", null, "Enter dev mode to edit");
+    gate.onclick = function () {
+      if (!confirm("These settings define what counts as a stopped machine and how the "
+          + "feed is read. A wrong value here corrupts every number downstream, and "
+          + "changes only take effect after a restart.\n\nEnter dev mode?")) return;
+      DEV_MODE = true;
+      loadFeed();
+    };
+    var w = el("div", "row"); w.style.marginTop = "12px"; w.append(gate);
+    box.append(w);
+    return;
+  }
+
+  feedDraft = Object.assign({}, d.pending || d.running);
+  var fields = [
+    ["base_url", "Feed address", "text", null],
+    ["poll_seconds", "Poll every", "number", "seconds"],
+    ["rpm_threshold", "Stopped below", "number", "rpm"],
+    ["offline_after_seconds", "Offline after silence of", "number", "seconds"],
+    ["expected_count", "Machines expected", "number", ""],
+    ["resolve_grace_seconds", "False-restart grace", "number", "seconds"],
+  ];
+  var grid = el("div", "row");
+  fields.forEach(function (f) {
+    var l = el("label", "f", f[1]);
+    var i = el("input");
+    i.type = f[2];
+    i.style.width = f[2] === "text" ? "260px" : "90px";
+    i.value = feedDraft[f[0]] == null ? "" : feedDraft[f[0]];
+    i.oninput = function () {
+      feedDraft[f[0]] = f[2] === "number" ? Number(i.value) : i.value;
+      $("#saveFeed").disabled = !keyOf();
+    };
+    var w2 = el("div", "row");
+    w2.append(i);
+    if (f[3]) w2.append(el("span", "abs", f[3]));
+    l.append(w2);
+    grid.append(l);
+  });
+  box.append(grid);
+
+  var actions = el("div", "row");
+  actions.style.marginTop = "12px";
+  var leave = el("button", "sm", "Leave dev mode");
+  leave.onclick = function () { DEV_MODE = false; loadFeed(); };
+  var spacer = el("div"); spacer.style.flex = "1";
+  var save = el("button", "primary", "Save (applies on restart)");
+  save.id = "saveFeed"; save.disabled = true;
+  save.onclick = async function () {
+    var body = Object.assign({ dev_mode: true }, feedDraft);
+    var r2 = await api("PUT", "/api/admin/feed", body);
+    if (r2.ok) {
+      banner("warn", "Saved. Nothing changes until ops-core restarts — the running "
+        + "values stay in force until then.");
+      DEV_MODE = false;
+      loadFeed();
+    } else handle(r2, "");
+  };
+  actions.append(leave, spacer, save);
+  box.append(actions);
+}
+
+function feedTable(running, pending) {
+  var t = el("table"), thead = el("thead"), head = el("tr");
+  ["Setting", "Running now", "After restart"].forEach(function (h) {
+    head.append(el("th", null, h));
+  });
+  thead.append(head); t.append(thead);
+  var tb = el("tbody");
+  var names = { base_url: "Feed address", poll_seconds: "Poll interval",
+                rpm_threshold: "Stopped below (rpm)",
+                offline_after_seconds: "Offline after (s)",
+                expected_count: "Machines expected",
+                resolve_grace_seconds: "False-restart grace (s)" };
+  Object.keys(names).forEach(function (k) {
+    var tr = el("tr");
+    tr.append(el("td", null, names[k]));
+    tr.append(el("td", "mono", String(running[k] == null ? "—" : running[k])));
+    var pd = el("td", "mono");
+    if (pending && pending[k] !== running[k] && pending[k] != null) {
+      pd.append(el("span", "tag warn", String(pending[k])));
+    } else pd.append(document.createTextNode("same"));
+    tr.append(pd);
+    tb.append(tr);
+  });
+  t.append(tb);
+  return t;
+}
+
 /* ------------------------------------------------------------------ 4. plans */
 
 function renderPlans() {
@@ -856,7 +1191,7 @@ function reasonTable(box, rows, quiet) {
   box.innerHTML = "";
   if (!rows.length) { box.append(el("div", "empty", "None.")); return; }
   var t = el("table"), thead = el("thead"), head = el("tr");
-  ["Fault", "Handled by", "In the WhatsApp question"]
+  ["Fault", "Handled by", "Typical repair", "Reply words", "In the question", ""]
     .forEach(function (h) { head.append(el("th", null, h)); });
   thead.append(head); t.append(thead);
   var tb = el("tbody");
@@ -864,6 +1199,8 @@ function reasonTable(box, rows, quiet) {
   rows.forEach(function (r) {
     var tr = el("tr");
     tr.append(el("td", null, r.label));
+
+    // owner / ticketable
     var td = el("td");
     if (r.ticketable) {
       var sel = el("select");
@@ -879,16 +1216,81 @@ function reasonTable(box, rows, quiet) {
     } else {
       td.append(el("span", "tag quiet", "recorded only"));
     }
+    if (!r.is_other && !r.in_prompt) {
+      var flip = el("button", "sm", r.ticketable ? "stop ticketing" : "make ticketable");
+      flip.style.marginLeft = "6px";
+      flip.onclick = async function () {
+        var body = { ticketable: !r.ticketable };
+        if (!r.ticketable) {
+          body.owner = (STATE.teams[0] || {}).id;
+          if (!confirm(r.label + " will open tickets owned by " + body.owner
+              + " (changeable after). Continue?")) return;
+        } else if (!confirm(r.label + " will stop opening tickets — it will only be "
+            + "recorded. Continue?")) return;
+        handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
+          body), "Updated " + r.label);
+      };
+      td.append(flip);
+    }
     tr.append(td);
-    tr.append(el("td", null, r.in_prompt ? "yes" : "no"));
+
+    // typical repair minutes
+    var em = el("td");
+    var mi = el("input");
+    mi.type = "number"; mi.style.width = "70px";
+    mi.value = r.expected_minutes == null ? "" : r.expected_minutes;
+    mi.setAttribute("aria-label", "typical repair minutes for " + r.label);
+    mi.onkeydown = function (e) { if (e.key === "Enter") mi.blur(); };
+    mi.onchange = async function () {
+      var v = Number(mi.value);
+      if (v === r.expected_minutes) return;
+      handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
+        { expected_minutes: v }), "Updated " + r.label);
+    };
+    em.append(mi, el("span", "abs", " min"));
+    tr.append(em);
+
+    // reply aliases
+    var al = el("td");
+    var ai = el("input");
+    ai.style.width = "160px";
+    ai.placeholder = "comma-separated";
+    ai.value = (r.prompt_aliases || []).join(", ");
+    ai.setAttribute("aria-label", "reply words for " + r.label);
+    ai.title = "Other words a WhatsApp reply may use for this fault";
+    ai.onkeydown = function (e) { if (e.key === "Enter") ai.blur(); };
+    ai.onchange = async function () {
+      var list = ai.value.split(",").map(function (x) { return x.trim(); })
+        .filter(Boolean);
+      handle(await api("PATCH", "/api/admin/reasons/" + encodeURIComponent(r.code),
+        { prompt_aliases: list }), "Reply words updated for " + r.label);
+    };
+    al.append(ai);
+    tr.append(al);
+
+    tr.append(el("td", null, r.in_prompt ? "yes (locked)" : "no"));
+
+    var act = el("td");
+    act.style.textAlign = "right";
+    if (!r.in_prompt && !r.is_other) {
+      var del = el("button", "sm danger", "Delete");
+      del.title = "Only possible while history has never used it";
+      del.onclick = async function () {
+        if (!confirm("Delete the fault type " + r.label + "?")) return;
+        handle(await api("DELETE", "/api/admin/reasons/" + encodeURIComponent(r.code)),
+          "Deleted " + r.label);
+      };
+      act.append(del);
+    }
+    tr.append(act);
     tb.append(tr);
   });
   t.append(tb);
   box.append(t);
   if (quiet) {
     box.append(el("div", "cap",
-      "These are recorded against a stop for reporting, but nobody is assigned and no "
-      + "ticket is opened, so there is nothing to set here."));
+      "Recorded against stops for reporting; turning one ticketable gives it an owner "
+      + "and an escalation."));
   }
 }
 
@@ -960,6 +1362,23 @@ async function loadSettings() {
 
 /* ------------------------------------------------------------------- wiring */
 
+/* tabs — hash-routed so a page can be linked and reload lands where you were */
+function showTab() {
+  var want = (location.hash || "#overview").slice(1);
+  var known = {};
+  document.querySelectorAll(".page").forEach(function (pg) {
+    known[pg.dataset.page] = true;
+  });
+  if (!known[want]) want = "overview";
+  document.querySelectorAll(".page").forEach(function (pg) {
+    pg.classList.toggle("on", pg.dataset.page === want);
+  });
+  document.querySelectorAll("#tabs a").forEach(function (a) {
+    a.classList.toggle("on", a.getAttribute("href") === "#" + want);
+  });
+}
+window.addEventListener("hashchange", showTab);
+
 var keyTimer = null;
 $("#key").oninput = function () {
   clearTimeout(keyTimer);
@@ -990,6 +1409,16 @@ $("#addTeam").onclick = async function () {
   }
 };
 $("#newTeam").onkeydown = function (e) { if (e.key === "Enter") $("#addTeam").click(); };
+$("#nrTicket").onchange = function () { $("#nrOwner").style.display = this.checked ? "" : "none"; };
+$("#nrAdd").onclick = async function () {
+  var name = $("#nrName").value.trim();
+  if (!name) return $("#nrName").focus();
+  var body = { name: name, ticketable: $("#nrTicket").checked };
+  if (body.ticketable) body.owner = $("#nrOwner").value;
+  if (handle(await api("POST", "/api/admin/reasons", body), "Fault type added"))
+    $("#nrName").value = "";
+};
+$("#nrName").onkeydown = function (e) { if (e.key === "Enter") $("#nrAdd").click(); };
 $("#saveShifts").onclick = async function () {
   handle(await api("PUT", "/api/admin/shifts", { shifts: shiftDraft }), "Shift times saved");
 };

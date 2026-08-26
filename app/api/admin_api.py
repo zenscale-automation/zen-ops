@@ -251,6 +251,9 @@ def overview():
             "owner": c.get("owner"),
             "ticketable": bool(c.get("ticketable")),
             "in_prompt": bool(c.get("show_in_prompt")),
+            "expected_minutes": c.get("expected_minutes"),
+            "prompt_aliases": c.get("prompt_aliases") or [],
+            "is_other": c.get("code") == cfg.other_code,
         } for c in cfg.codes],
         # So the roster grid can label each column with its actual hours. "Shift C" means
         # nothing to somebody deciding whether Ravi can cover it; "22:00-06:00" does.
@@ -671,51 +674,168 @@ def set_plan(plan_id: str):
 # --------------------------------------------------------------------------- reasons
 
 @bp.patch("/api/admin/reasons/<path:code>")
-def set_reason_owner(code: str):
-    """Only the owning team is editable. The reason's label, whether it appears in the
-    prompt, and the order it appears in are all frozen into the approved WhatsApp
-    template — changing any of them here would leave the prompt and the config disagreeing
-    with no way to tell from the outside."""
+def update_reason(code: str):
+    """Everything about a fault type that the approved WhatsApp template does NOT
+    freeze: the owning team, the typical repair time, whether it opens a ticket, and
+    the reply aliases. The label, whether it appears in the question, and its position
+    stay locked — those are the template's, and changing them here would leave the
+    prompt and the config disagreeing with no way to tell from outside."""
     ok, why = _authorised()
     if not ok:
         return _err(403, why)
     cfg = _cfg()
     codes = {c["code"]: c for c in cfg.codes}
     if code not in codes:
-        return _err(404, "no such reason", code=code)
-
+        return _err(404, "no such fault type", code=code)
+    current = codes[code]
     body = request.get_json(silent=True) or {}
-    locked = [k for k in body if k not in ("owner",)]
+
+    locked = [k for k in body if k not in
+              ("owner", "expected_minutes", "ticketable", "prompt_aliases")]
     if locked:
-        return _err(409, "only the owning team can be changed here",
+        return _err(409, "those fields are fixed by the approved WhatsApp template",
                     rejected=locked,
-                    detail="labels, prompt visibility and ordering are fixed by the "
-                           "approved WhatsApp template and need a new template approved "
-                           "before they can change")
-    owner = (body.get("owner") or "").strip()
-    if owner not in (cfg.roles or {}):
-        return _err(422, "no such team", owner=owner, known_teams=sorted(cfg.roles or {}))
-    if not codes[code].get("ticketable"):
-        return _err(409, "that reason does not open a ticket, so it has no owning team",
-                    code=code)
+                    editable=["owner", "expected_minutes", "ticketable", "prompt_aliases"])
 
-    # A team with an empty shift is legal only while nothing routes to it. Pointing a
-    # fault at one is what MAKES it routed, so the emptiness check belongs here too —
-    # otherwise a brand-new team silently becomes the owner of a fault nobody is on call
-    # for, which is the failure the roster block exists to prevent, entered by the back
-    # door.
-    empty = _empty_shifts(_roster_of(cfg, owner))
-    if empty:
-        return _err(409, "that team has nobody on duty for some shifts — staff it before "
-                         "routing faults to it",
-                    owner=owner, empty_shifts=empty,
-                    hint="set the roster for " + owner + " first")
+    updated = dict(current)
+    summary = {"updated": "reason", "code": code}
 
-    # codes is a LIST in reasons.yaml, so a merge patch cannot address one entry — the
-    # whole list is rewritten with just this owner changed.
-    new_codes = [dict(c, owner=owner) if c["code"] == code else c for c in cfg.codes]
-    return _apply("reasons", {"codes": new_codes}, _actor(),
-                  {"updated": "reason_owner", "code": code, "owner": owner})
+    if "ticketable" in body:
+        want = bool(body["ticketable"])
+        if not want and current.get("ticketable"):
+            open_now = db.query_one(
+                "SELECT COUNT(*) n FROM tickets WHERE code=? AND status!='closed'",
+                (code,))["n"]
+            if open_now:
+                return _err(409, "tickets are open against this fault right now — "
+                                 "closing the door behind them would strand them",
+                            open_tickets=open_now)
+            updated.pop("owner", None)
+        updated["ticketable"] = want
+        summary["ticketable"] = want
+
+    if "owner" in body:
+        owner = (body["owner"] or "").strip()
+        if not updated.get("ticketable") and owner:
+            return _err(409, "this fault does not open a ticket, so it has no owning "
+                             "team — turn ticketable on first", code=code)
+        if owner:
+            if owner not in (cfg.roles or {}):
+                return _err(422, "no such team", owner=owner,
+                            known_teams=sorted(cfg.roles or {}))
+            empty = _empty_shifts(_roster_of(cfg, owner))
+            if empty:
+                return _err(409, "that team has nobody on duty for some shifts",
+                            owner=owner, empty_shifts=empty,
+                            hint="staff it before routing faults to it")
+            updated["owner"] = owner
+            summary["owner"] = owner
+
+    if "expected_minutes" in body:
+        try:
+            mins = int(body["expected_minutes"])
+        except (TypeError, ValueError):
+            return _err(400, "expected_minutes must be a whole number")
+        if not (0 <= mins <= 24 * 60):
+            return _err(422, "expected_minutes out of range", minimum=0, maximum=1440)
+        updated["expected_minutes"] = mins
+        summary["expected_minutes"] = mins
+
+    if "prompt_aliases" in body:
+        aliases = body["prompt_aliases"]
+        if not isinstance(aliases, list) or                 not all(isinstance(a, str) and a.strip() for a in aliases):
+            return _err(400, "prompt_aliases must be a list of non-empty strings")
+        if len(aliases) > 8:
+            return _err(422, "too many aliases", maximum=8)
+        updated["prompt_aliases"] = [a.strip()[:60] for a in aliases]
+        summary["aliases"] = len(aliases)
+
+    # codes is a LIST, so the whole list is rewritten with this one entry changed —
+    # merge_patch cannot address a list element, and order is the digit mapping.
+    new_codes = [updated if c["code"] == code else c for c in cfg.codes]
+    return _apply("reasons", {"codes": new_codes}, _actor(), summary)
+
+
+@bp.post("/api/admin/reasons")
+def create_reason():
+    """A new fault type — as long as it stays OUT of the WhatsApp question, whose
+    option list is frozen in the approved template. Reachable through reply aliases,
+    the panel, or auto-classification; a supervisor can still type its name."""
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name or len(name) > 60:
+        return _err(400, "name is required (up to 60 characters)")
+    code = f"{cfg.department}.{_slug(name)}"
+    if any(c["code"] == code for c in cfg.codes):
+        return _err(409, "a fault type with that name already exists", code=code)
+    if body.get("show_in_prompt"):
+        return _err(409, "the WhatsApp question's options are frozen in the approved "
+                         "template — a new fault type cannot appear there without a "
+                         "new template being approved",
+                    hint="create it without show_in_prompt; supervisors can reply with "
+                         "its name, and it can own tickets and auto-classify rules")
+
+    entry: dict = {"code": code, "label": {"en": name}}
+    ticketable = bool(body.get("ticketable"))
+    entry["ticketable"] = ticketable
+    if ticketable:
+        owner = (body.get("owner") or "").strip()
+        if owner not in (cfg.roles or {}):
+            return _err(422, "a fault that opens tickets needs an owning team",
+                        known_teams=sorted(cfg.roles or {}))
+        if _empty_shifts(_roster_of(cfg, owner)):
+            return _err(409, "that team has nobody on duty for some shifts", owner=owner)
+        entry["owner"] = owner
+    try:
+        entry["expected_minutes"] = int(body.get("expected_minutes", 30))
+    except (TypeError, ValueError):
+        return _err(400, "expected_minutes must be a whole number")
+
+    return _apply("reasons", {"codes": list(cfg.codes) + [entry]}, _actor(),
+                  {"created": "reason", "code": code, "ticketable": ticketable})
+
+
+@bp.delete("/api/admin/reasons/<path:code>")
+def delete_reason(code: str):
+    """Remove a fault type — only one that history has never touched. A code with
+    tickets or reasons recorded against it must stay, or every past report shows a raw
+    slug where its name was; the ticketable toggle is how a live one is retired."""
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    entry = next((c for c in cfg.codes if c["code"] == code), None)
+    if entry is None:
+        return _err(404, "no such fault type", code=code)
+    if entry.get("show_in_prompt"):
+        return _err(409, "this fault is a button in the approved WhatsApp question — "
+                         "it cannot be removed while the template shows it")
+    if code == cfg.other_code:
+        return _err(409, "this is the catch-all every prompt offers — it cannot go")
+    used = db.query_one(
+        "SELECT (SELECT COUNT(*) FROM tickets WHERE code=?) t,"
+        " (SELECT COUNT(*) FROM incident_reasons WHERE code=?) r", (code, code))
+    if used["t"] or used["r"]:
+        return _err(409, "history has this fault recorded against it — removing the "
+                         "definition would leave raw codes in every past report",
+                    tickets=used["t"], reasons_recorded=used["r"],
+                    hint="turn ticketable off instead; that retires it from new use")
+    if any(r.get("code") == code for r in cfg.auto_classify):
+        return _err(409, "a detection rule still files stops under this fault",
+                    hint="remove or repoint that rule first")
+    if code in (cfg.ladders or {}):
+        return _err(409, "an escalation plan is keyed to this fault",
+                    hint="delete that plan first")
+
+    return _apply("reasons",
+                  {"codes": [c for c in cfg.codes if c["code"] != code]},
+                  _actor(), {"deleted": "reason", "code": code})
+
+
 
 
 # --------------------------------------------------------------------------- simulate
@@ -1210,3 +1330,239 @@ def accountability_report():
                                          "name on a time.",
         },
     })
+
+
+# --------------------------------------------------------------------------- feed
+
+_FEED_FIELDS = {
+    # panel field       -> (yaml path under settings, type, min, max)
+    "poll_seconds":        ("poll_seconds", int, 5, 600),
+    "rpm_threshold":       (None, float, 1, 10000),   # writes stop_when.lt AND resolve_when.gte
+    "offline_after_seconds": ("offline_after_seconds", int, 30, 3600),
+    "expected_count":      ("expected_count", int, 0, 500),
+    "resolve_grace_seconds": ("resolve_grace_seconds", int, 0, 600),
+}
+
+
+@bp.get("/api/admin/feed")
+def get_feed():
+    """The connection to the machines, shown honestly in two columns: what is RUNNING
+    (read at boot, immutable until restart) and what is PENDING (stored, waiting).
+    These are behind dev mode in the panel because a wrong rpm threshold silently
+    redefines what a "stop" is — every number downstream inherits the mistake."""
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    running_settings = cfg.source.get("settings", {}) or {}
+    pending = (config.load_overrides().get("source") or {})
+    pending_settings = (pending.get("settings") or {})
+
+    def view(settings):
+        return {
+            "base_url": settings.get("base_url"),
+            "poll_seconds": settings.get("poll_seconds"),
+            "rpm_threshold": (settings.get("stop_when") or {}).get("lt"),
+            "offline_after_seconds": settings.get("offline_after_seconds"),
+            "expected_count": settings.get("expected_count"),
+            "resolve_grace_seconds": settings.get("resolve_grace_seconds"),
+        }
+
+    running = view(running_settings)
+    merged = view(config.merge_patch(cfg.source, pending).get("settings", {}) or {}) \
+        if pending else None
+    return jsonify({
+        "running": running,
+        "pending": merged,
+        "restart_required": bool(merged and merged != running),
+        "note": "The feed adapter reads these once at boot. Saved changes wait for a "
+                "restart — they are never silently live and never silently inert.",
+    })
+
+
+@bp.put("/api/admin/feed")
+def set_feed():
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    body = request.get_json(silent=True) or {}
+    if body.get("dev_mode") is not True:
+        return _err(403, "feed settings are behind dev mode",
+                    hint='confirm dev mode in the panel — the request must carry '
+                         '"dev_mode": true')
+
+    settings_patch: dict = {}
+    summary: dict = {}
+    for field, (path, cast, lo, hi) in _FEED_FIELDS.items():
+        if field not in body:
+            continue
+        try:
+            value = cast(body[field])
+        except (TypeError, ValueError):
+            return _err(400, f"{field} must be a number")
+        if not (lo <= value <= hi):
+            return _err(422, f"{field} out of range", minimum=lo, maximum=hi, got=value)
+        if field == "rpm_threshold":
+            # One field, both sides. stop_when.lt and resolve_when.gte must stay equal
+            # or a dead band opens between "stopped" and "running" where a machine is
+            # neither — the YAML comment calls this out and the panel cannot recreate it.
+            settings_patch["stop_when"] = {"field": "rpm", "lt": value}
+            settings_patch["resolve_when"] = {"field": "rpm", "gte": value}
+        else:
+            settings_patch[path] = value
+        summary[field] = value
+
+    if "base_url" in body:
+        url = str(body["base_url"] or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return _err(422, "base_url must start with http:// or https://", got=url[:60])
+        settings_patch["base_url"] = url
+        summary["base_url"] = url
+
+    if not settings_patch:
+        return _err(400, "nothing to change",
+                    editable=sorted(list(_FEED_FIELDS) + ["base_url"]))
+
+    result = _apply("source", {"settings": settings_patch}, _actor(),
+                    {"updated": "feed", **summary})
+    if isinstance(result, tuple):
+        return result
+    payload = result.get_json()
+    payload["restart_required"] = True
+    payload["note"] = "saved — takes effect when ops-core restarts"
+    return jsonify(payload)
+
+
+# --------------------------------------------------------------------------- backstop
+
+@bp.put("/api/admin/backstop")
+def set_backstop():
+    """Who unroutable faults fall back to. The last line before a fault reaches nobody,
+    so it must be a real, reachable person."""
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    pid = ((request.get_json(silent=True) or {}).get("person_id") or "").strip()
+    person = (cfg.people or {}).get(pid)
+    if not person:
+        return _err(404, "no such person", person_id=pid,
+                    known=sorted((cfg.people or {}).keys()))
+    if not (person.get("whatsapp") or person.get("gchat_space")):
+        return _err(422, "that person has no contact channel — a backstop who cannot "
+                         "be reached is not a backstop", person_id=pid)
+    return _apply("routing", {"default_owner": pid}, _actor(),
+                  {"updated": "backstop", "person_id": pid})
+
+
+# --------------------------------------------------------------------------- detection
+
+_RULE_KINDS = {
+    "fleet_stop": ("within_seconds", 1, 120),
+    "fleet_stop_at_boundary": ("window_minutes", 1, 120),
+    "duration_under": ("seconds", 10, 3600),
+}
+
+
+@bp.get("/api/admin/detection")
+def get_detection():
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    active = db.query_one(
+        "SELECT COUNT(*) n FROM assets WHERE department=? AND active=1",
+        (cfg.department,))["n"]
+    frac = float(cfg.reasons.get("fleet_fraction", 1.0))
+    import math
+    return jsonify({
+        "version": cfg.version,
+        "asset_type": cfg.asset_type,
+        "fleet_fraction": frac,
+        "active_machines": active,
+        "fleet_threshold_now": max(2, math.ceil(active * frac)),
+        "rules": [{"code": r.get("code"), "label": cfg.label(r.get("code", "")),
+                   "kind": r.get("rule"),
+                   "window": next((r[k] for k in ("within_seconds", "window_minutes",
+                                                  "seconds") if k in r), None)}
+                  for r in cfg.auto_classify],
+        "rule_kinds": {k: v[0] for k, v in _RULE_KINDS.items()},
+    })
+
+
+@bp.put("/api/admin/detection")
+def set_detection():
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+    patch: dict = {}
+    summary: dict = {}
+
+    if "asset_type" in body:
+        word = str(body["asset_type"] or "").strip().lower()
+        if not word.isalpha() or len(word) > 24:
+            return _err(400, "asset_type must be a single word, e.g. loom, vat, machine")
+        patch["asset_type"] = word
+        summary["asset_type"] = word
+
+    if "fleet_fraction" in body:
+        try:
+            frac = float(body["fleet_fraction"])
+        except (TypeError, ValueError):
+            return _err(400, "fleet_fraction must be a number between 0 and 1")
+        if not (0.1 <= frac <= 1.0):
+            return _err(422, "fleet_fraction must be between 0.1 and 1.0", got=frac)
+        # The failure mode worth being paranoid about, from the YAML's own analysis: a
+        # low fraction on a small fleet collapses the threshold to 2, and any two
+        # machines stopping in the same poll get auto-coded power_failure — which pages
+        # NOBODY, so two real faults are silently swallowed. A false negative here is
+        # invisible, so it needs an explicit acknowledgement, not just a save.
+        import math
+        active = db.query_one(
+            "SELECT COUNT(*) n FROM assets WHERE department=? AND active=1",
+            (cfg.department,))["n"]
+        threshold = max(2, math.ceil(active * frac))
+        if threshold <= 2 and active > 2 and \
+                "fleet_threshold_collapses" not in (body.get("acknowledge") or []):
+            return _err(409,
+                        f"at {frac} with {active} machines, any 2 stopping in the same "
+                        "poll would be classed as a power failure — which pages nobody, "
+                        "so two real faults would be silently swallowed",
+                        acknowledge_with="fleet_threshold_collapses",
+                        hint="raise the fraction, or acknowledge if this is deliberate")
+        patch["fleet_fraction"] = frac
+        summary["fleet_fraction"] = frac
+
+    if "rules" in body:
+        rules = body["rules"]
+        if not isinstance(rules, list):
+            return _err(400, "rules must be a list")
+        codes = {c["code"] for c in cfg.codes}
+        out = []
+        for i, r in enumerate(rules):
+            kind = (r or {}).get("kind")
+            if kind not in _RULE_KINDS:
+                return _err(422, f"rule {i + 1}: unknown kind", kind=str(kind)[:40],
+                            known=sorted(_RULE_KINDS))
+            code = (r or {}).get("code")
+            if code not in codes:
+                return _err(422, f"rule {i + 1}: unknown fault code", code=str(code)[:60])
+            key, lo, hi = _RULE_KINDS[kind]
+            try:
+                window = float(r.get("window"))
+            except (TypeError, ValueError):
+                return _err(400, f"rule {i + 1}: window must be a number")
+            if not (lo <= window <= hi):
+                return _err(422, f"rule {i + 1}: window out of range",
+                            minimum=lo, maximum=hi, got=window)
+            out.append({"code": code, "rule": kind,
+                        key: int(window) if window == int(window) else window})
+        patch["auto_classify"] = out
+        summary["rules"] = len(out)
+
+    if not patch:
+        return _err(400, "nothing to change",
+                    editable=["asset_type", "fleet_fraction", "rules"])
+    return _apply("reasons", patch, _actor(), {"updated": "detection", **summary})
