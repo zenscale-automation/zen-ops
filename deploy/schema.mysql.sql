@@ -246,6 +246,21 @@ ALTER TABLE opscore_tickets ADD COLUMN eta_by VARCHAR(64) NULL;
 
 ALTER TABLE opscore_tickets ADD COLUMN eta_misses INT NOT NULL DEFAULT 0;
 
+-- ===== 006_delivery_status.sql =====
+-- What actually happened to a message after the provider accepted it.
+--
+-- PickyAssist answers 100 the moment a message is QUEUED, and Meta's verdict arrives
+-- later, out of band. Until now that verdict lived only in a web panel someone had to
+-- go and read: a number with an unapproved display name dropped every message for an
+-- hour while the opscore_outbox showed 'sent' and /health showed ok. These columns receive the
+-- delivery reports their Event Webhook pushes, so a message that dies after acceptance
+-- flips its row to 'failed' and the health metric that means "somebody was not called"
+-- moves without a human reading anything.
+
+ALTER TABLE opscore_outbox ADD COLUMN delivery_status VARCHAR(16) NULL;
+
+ALTER TABLE opscore_outbox ADD COLUMN delivery_error VARCHAR(255) NULL;
+
 -- ===== bookkeeping =====
 CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
   name VARCHAR(191) NOT NULL,
@@ -263,3 +278,5 @@ INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('004_asset_offplan.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
 INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('005_ticket_eta.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('006_delivery_status.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
