@@ -20,9 +20,10 @@ def client(cfg):
 
 def _sent_row(msg_id="9844217"):
     db.execute(
-        "INSERT INTO outbox(channel, recipient, payload, status, created_at, sent_at,"
-        " provider_msg_id) VALUES ('whatsapp', '+919000000005', '{}', 'sent', ?, ?, ?)",
-        (clock.now_iso(), clock.now_iso(), msg_id))
+        "INSERT INTO outbox(channel, recipient, payload, dedupe_key, next_try_at,"
+        " sent_at, provider_msg_id, status) VALUES"
+        " ('whatsapp', '+919000000005', '{}', ?, ?, ?, ?, 'sent')",
+        (f"t:{msg_id}", clock.now_iso(), clock.now_iso(), msg_id))
     return db.query_one("SELECT id FROM outbox WHERE provider_msg_id=?", (msg_id,))["id"]
 
 
