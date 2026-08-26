@@ -27,8 +27,14 @@ from app import clock, config, db
 
 
 def _connect():
+    # Same boot-order trap main.py hit: config.load() reads the runtime overrides from
+    # the DATABASE, so calling it before db.init silently drops the override layer and
+    # this tool would export the YAML as "effective" — a backup of the wrong config,
+    # discovered when the identical bug in another script routed a live test message to
+    # the wrong person's phone. Load, init, then re-apply.
     cfg = config.load()
     db.init(cfg.db_params(), cfg.table_prefix)
+    config.reload_into(cfg, config.load_overrides())
     return cfg
 
 
