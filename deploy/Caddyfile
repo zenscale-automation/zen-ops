@@ -69,6 +69,13 @@
 		reverse_proxy 127.0.0.1:8000
 	}
 
+	# Delivery reports from PickyAssist's Event Webhook — same secret-is-the-path
+	# pattern as the message webhook, its own slug so either can rotate alone.
+	handle /hook/<EVENT_HOOK_SECRET>/events {
+		uri replace /hook/<EVENT_HOOK_SECRET>/events /webhook/events
+		reverse_proxy 127.0.0.1:8000
+	}
+
 	handle /ops/api/admin/* {
 		uri strip_prefix /ops
 		reverse_proxy 127.0.0.1:8000
