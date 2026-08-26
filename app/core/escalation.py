@@ -344,6 +344,14 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
         # anywhere records that it did not. The miss generation makes each cycle's ask
         # its own message while restarts still dedupe correctly within a cycle.
         gen = f":miss{eta_generation}" if eta_generation else ""
+        # The repeat past the last rung has the same trap with a different trigger: it
+        # re-fires the SAME rung number every cycle, so from the second cycle on the key
+        # collides with the previous reminder and the repeat is swallowed — while the
+        # event log still says ESCALATED. The escalation row id is new each cycle but
+        # stable across crash-retries of one cycle, which is exactly what a dedupe
+        # generation has to be.
+        if esc_row.get("trigger") == "repeat":
+            gen += f":rep{esc_row['id']}"
         dedupe = f"{entity_tag}:rung:{esc_row['rung']}{gen}:{rcpt.person_id}"
         outbox.enqueue(c, rcpt.channel, rcpt.address, payload, dedupe, at=now)
 

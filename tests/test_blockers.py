@@ -181,6 +181,24 @@ def test_the_last_rung_repeats_while_the_asset_is_still_stopped(cfg):
     assert still_pending["n"] == 1, \
         "past the last rung there must still be a future ask scheduled"
 
+    # And each cycle must actually put a MESSAGE in the outbox, not just mark a row
+    # fired. The repeat re-fires the same rung number, so a dedupe key built from the
+    # rung alone collides with the previous cycle's reminder and INSERT IGNORE swallows
+    # every repeat after the first — found live when the second hourly reminder of a
+    # real ticket never reached a phone while the event log said ESCALATED.
+    def _queued():
+        return db.query_one(
+            "SELECT COUNT(*) n FROM outbox WHERE dedupe_key LIKE ?",
+            (f"inc:{inc['id']}:rung:%",))["n"]
+
+    base = _queued()
+    every = ladder[-1]["repeat_every_minutes"]
+    for cycle in (1, 2):
+        clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=every + 1))
+        ticker.tick(cfg)
+        assert _queued() == base + cycle, \
+            f"repeat cycle {cycle} queued no message — being told once is not being told"
+
 
 # --- an unrouted page is not a page --------------------------------------------
 
