@@ -61,6 +61,14 @@
 	# Caddy only routes. Authentication is X-Admin-Key, checked by the application,
 	# and it is required on reads as well as writes because the effective config
 	# contains every person's mobile number.
+	# Inbound WhatsApp replies, from PickyAssist. The provider signs nothing, so the
+	# secret IS the path: unguessable, known only to PickyAssist's webhook setting and
+	# this file. Rotating it is editing this one line.
+	handle /hook/<HOOK_SECRET>/whatsapp {
+		uri replace /hook/<HOOK_SECRET>/whatsapp /webhook/whatsapp
+		reverse_proxy 127.0.0.1:8000
+	}
+
 	handle /ops/api/admin/* {
 		uri strip_prefix /ops
 		reverse_proxy 127.0.0.1:8000
