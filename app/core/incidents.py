@@ -18,12 +18,19 @@ def asset_id_for(cfg: "config.Config", asset_ref: str) -> str:
 
 
 def ensure_asset(c, cfg: "config.Config", asset_ref: str, label: str | None = None) -> str:
+    """Register an asset the feed is reporting. Reporting IS the reactivation signal:
+    a machine we retired (active=0) that starts sending data again is back in service —
+    the feed is the one source of truth for what exists — so the flag flips back rather
+    than leaving the machine half-known: paged about, but missing from the fleet-size
+    denominator the power-cut detector divides by."""
     aid = asset_id_for(cfg, asset_ref)
-    c.execute(
+    cur = c.execute(
         "INSERT IGNORE INTO assets(id, department, asset_ref, label, active)"
         " VALUES (?,?,?,?,1)",
         (aid, cfg.department, asset_ref, label),
     )
+    if cur.rowcount == 0:                       # row existed — make sure it is live
+        c.execute("UPDATE assets SET active=1 WHERE id=? AND active=0", (aid,))
     return aid
 
 

@@ -237,3 +237,16 @@ def test_a_repeating_last_step_promises_its_own_interval(cfg):
     ladder = [{"after_minutes": 10, "notify": "engineering", "action": "ask_reason",
                "repeat_every_minutes": 45}]
     assert esc._minutes_to_next_step(ladder, 0) == 45
+
+
+def test_a_retired_machine_that_reports_again_is_fully_back(cfg):
+    """The feed is the source of truth for what exists. A retired machine that starts
+    sending data again used to come back half-known — incidents opened for it, but it
+    stayed out of the fleet-size denominator the power-cut detector divides by."""
+    with db.transaction() as c:
+        aid = incidents.ensure_asset(c, cfg, "loom_93")
+        c.execute("UPDATE assets SET active=0 WHERE id=?", (aid,))
+    with db.transaction() as c:
+        incidents.ensure_asset(c, cfg, "loom_93")     # the feed reports it again
+    row = db.query_one("SELECT active FROM assets WHERE id=?", (aid,))
+    assert row["active"] == 1
