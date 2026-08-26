@@ -1503,7 +1503,7 @@ def set_detection():
     if "asset_type" in body:
         word = str(body["asset_type"] or "").strip().lower()
         if not word.isalpha() or len(word) > 24:
-            return _err(400, "asset_type must be a single word, e.g. loom, vat, machine")
+            return _err(400, "asset_type must be a single word, e.g. vat or machine")
         patch["asset_type"] = word
         summary["asset_type"] = word
 

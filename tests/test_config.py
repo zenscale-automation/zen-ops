@@ -262,11 +262,19 @@ def test_writes_are_disabled_when_no_admin_key_is_configured(cfg, monkeypatch):
     assert r.status_code == 403 and "disabled" in r.get_json()["error"]
 
 
-def test_source_scope_is_restart_only(cfg, monkeypatch):
+def test_source_scope_stores_but_never_goes_live_before_a_restart(cfg, monkeypatch):
+    """Source used to be refused outright. It now stores like every other scope but is
+    applied only at boot — the feed adapter reads these settings once when it is built,
+    so the write must say restart_required and the RUNNING config must not move."""
     monkeypatch.setenv("OPS_ADMIN_API_KEY", "test-admin-key")
+    before = cfg.source["settings"]["poll_seconds"]
     r = _client(cfg).patch("/api/config/source", headers=_hdr(),
                            json={"settings": {"poll_seconds": 5}})
-    assert r.status_code == 409 and "restart-only" in r.get_json()["error"]
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["restart_required"] is True
+    assert cfg.source["settings"]["poll_seconds"] == before, \
+        "the running config must not move until the restart actually happens"
 
 
 def test_every_change_is_audited(cfg, monkeypatch):
