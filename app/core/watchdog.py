@@ -26,6 +26,7 @@ record next to the messages it was raised about.
 from __future__ import annotations
 
 import logging
+import os
 
 from .. import clock, db
 from . import outbox
@@ -36,6 +37,27 @@ log = logging.getLogger("ops.watchdog")
 # own destination in the URL, so this is a label for humans reading the outbox, not an
 # address anything is looked up by.
 SPACE = "ops-alerts"
+
+_warned_unconfigured = False
+
+
+def _destination_configured() -> bool:
+    """Is there anywhere for an alert to go?
+
+    Queuing alarms with no destination is worse than not raising them: the rows pile up
+    in the outbox looking like messages that were sent, which is the exact confusion
+    this module exists to end. When Chat is not set up the watchdog says so once and
+    stays quiet.
+    """
+    global _warned_unconfigured
+    if os.environ.get("GCHAT_WEBHOOK_URL") or os.environ.get("GCHAT_WEBHOOK_BASE_URL"):
+        return True
+    if not _warned_unconfigured:
+        _warned_unconfigured = True
+        log.warning("alerts are enabled but no Google Chat destination is configured "
+                    "(set GCHAT_WEBHOOK_URL) — nothing will be raised when the send "
+                    "path breaks")
+    return False
 
 
 # --- small state helpers ---------------------------------------------------------
@@ -124,6 +146,8 @@ def check_send_path(cfg) -> dict:
     conf = cfg.send_watchdog
     if not conf.get("enabled", True):
         return {"skipped": "disabled"}
+    if not _destination_configured():
+        return {"skipped": "no destination"}
 
     every = max(1.0, float(conf.get("repeat_minutes", 30)))
     channel = conf.get("channel", "whatsapp")
@@ -256,6 +280,8 @@ def check_daily_digest(cfg) -> dict:
     conf = cfg.daily_digest
     if not conf.get("enabled", True):
         return {"skipped": "disabled"}
+    if not _destination_configured():
+        return {"skipped": "no destination"}
 
     at = str(conf.get("at", "06:15"))
     try:
@@ -265,8 +291,17 @@ def check_daily_digest(cfg) -> dict:
         return {"skipped": "bad time"}
 
     local = clock.to_ist(clock.now())
-    if (local.hour, local.minute) < (hh, mm):
+    scheduled = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if local < scheduled:
         return {"sent": False}
+    # A digest is a morning briefing, not a backlog item. If the box was down at 06:15
+    # and comes back at 07:00 the numbers are still worth reading; if it comes back at
+    # 23:00 they are not, and posting them then would arrive as a second, confusing
+    # "today" hours after the day it describes.
+    late = (local - scheduled).total_seconds() / 60
+    catch_up = float(conf.get("catch_up_minutes", 120))
+    if late > catch_up:
+        return {"sent": False, "skipped": f"{round(late)} min late"}
 
     # The date is the whole schedule: one row per local day, and the UNIQUE dedupe key
     # is what makes "once every day" true rather than "once per tick after 06:15".

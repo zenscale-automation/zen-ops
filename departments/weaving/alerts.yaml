@@ -16,6 +16,9 @@ daily_digest:
   enabled: true
   at: "06:15"                 # local time; shift A starts at 06:00
   window_hours: 24
+  # If ops-core was down at 06:15 the briefing is still worth reading an hour later —
+  # but not at midnight, arriving as "today" after the day it describes has ended.
+  catch_up_minutes: 120
 
 # The send-path watchdog. The first message that fails to reach a phone raises this
 # IMMEDIATELY — waiting out an interval before the first warning is time spent believing

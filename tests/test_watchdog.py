@@ -20,9 +20,10 @@ from app.core import watchdog
 
 
 @pytest.fixture()
-def alerting(cfg):
+def alerting(cfg, monkeypatch):
     """cfg with the watchdog on a 30-minute cadence and the digest disabled, so the two
     behaviours are tested apart from each other."""
+    monkeypatch.setenv("GCHAT_WEBHOOK_URL", "https://chat.example/hook")
     cfg.alerts = {"send_watchdog": {"enabled": True, "channel": "whatsapp",
                                     "repeat_minutes": 30,
                                     "assume_delivered_after_minutes": 15},
@@ -143,23 +144,36 @@ def test_a_disabled_watchdog_stays_silent(alerting):
 # --- the daily digest ------------------------------------------------------------
 
 @pytest.fixture()
-def digesting(cfg):
-    cfg.alerts = {"daily_digest": {"enabled": True, "at": "06:15", "window_hours": 24},
+def digesting(cfg, monkeypatch):
+    # The virtual clock sits at 09:30 IST, so 09:00 is half an hour ago — inside the
+    # catch-up window, the way a real 06:15 digest is when the ticker runs at 06:15:30.
+    monkeypatch.setenv("GCHAT_WEBHOOK_URL", "https://chat.example/hook")
+    cfg.alerts = {"daily_digest": {"enabled": True, "at": "09:00", "window_hours": 24,
+                                   "catch_up_minutes": 120},
                   "send_watchdog": {"enabled": False}}
     return cfg
 
 
 def test_the_digest_goes_out_once_a_day_however_often_the_ticker_runs(digesting):
-    # The virtual clock sits at 09:30 IST — past the 06:15 send time.
+    start = clock.now()
     assert watchdog.check_daily_digest(digesting)["sent"] is True
-    for _ in range(10):
-        clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=30))
+    for _ in range(10):                                  # ten more ticker passes
+        clock.CLOCK.set_virtual(clock.now() + timedelta(minutes=3))
         watchdog.check_daily_digest(digesting)
     assert len(_alerts()) == 1
 
-    clock.CLOCK.set_virtual(clock.now() + timedelta(days=1))
+    clock.CLOCK.set_virtual(start + timedelta(days=1))
     watchdog.check_daily_digest(digesting)
     assert len(_alerts()) == 2, "the next day gets its own digest"
+
+
+def test_a_digest_that_is_hours_late_is_dropped_not_posted_at_midnight(digesting):
+    # ops-core was down all morning and came back at 22:00. Yesterday's briefing
+    # arriving now would read as today's, hours after the day it describes.
+    clock.CLOCK.set_virtual(clock.now() + timedelta(hours=12))
+    out = watchdog.check_daily_digest(digesting)
+    assert out["sent"] is False and "late" in out["skipped"]
+    assert _alerts() == []
 
 
 def test_nothing_goes_out_before_the_configured_time(digesting):
@@ -204,3 +218,15 @@ def test_a_broken_digest_time_is_refused_at_config_time(cfg):
     with pytest.raises(config.ConfigError) as e:
         config.validate(cfg)
     assert "HH:MM" in str(e.value)
+
+
+def test_with_no_chat_destination_nothing_is_queued_at_all(cfg, monkeypatch):
+    """Alarms with nowhere to go must not pile up in the outbox looking like messages
+    that were sent — that is the confusion this module exists to end."""
+    monkeypatch.delenv("GCHAT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("GCHAT_WEBHOOK_BASE_URL", raising=False)
+    cfg.alerts = {"send_watchdog": {"enabled": True}, "daily_digest": {"enabled": True}}
+    _msg("failed", error="boom")
+    assert watchdog.check_send_path(cfg) == {"skipped": "no destination"}
+    assert watchdog.check_daily_digest(cfg) == {"skipped": "no destination"}
+    assert _alerts() == []
