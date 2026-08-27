@@ -35,7 +35,7 @@ _write_lock = threading.Lock()  # serialise writers within this process (Rule 3 
 _TABLES = [
     "schema_migrations", "incident_reasons", "inbound_raw", "config_overrides",
     "assets", "incidents", "tickets", "escalations", "outbox", "events",
-    "asset_offplan",
+    "asset_offplan", "alert_state",
 ]
 _TABLE_RE = {t: re.compile(r"\b" + t + r"\b") for t in _TABLES}
 

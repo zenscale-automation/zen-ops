@@ -1,0 +1,31 @@
+department: weaving
+
+# Who watches the watchman.
+#
+# Every message this system sends travels over WhatsApp, and the pilot proved the
+# obvious failure: when that channel breaks, the system goes quiet in exactly the way a
+# healthy plant looks. Nobody is paged about not being paged. These two alerts go over a
+# SECOND channel (a Google Chat space) so a broken send path announces itself, and so
+# somebody sees the day's numbers without opening a dashboard.
+#
+# The webhook URL itself is a credential and lives in .env (GCHAT_WEBHOOK_URL), never
+# here — this file is in git.
+
+# One message a day: what is running right now, and what the last 24 hours cost.
+daily_digest:
+  enabled: true
+  at: "06:15"                 # local time; shift A starts at 06:00
+  window_hours: 24
+
+# The send-path watchdog. The first message that fails to reach a phone raises this
+# IMMEDIATELY — waiting out an interval before the first warning is time spent believing
+# people are being called when they are not — and then it repeats on the cadence below
+# for as long as the channel stays broken.
+send_watchdog:
+  enabled: true
+  channel: whatsapp
+  repeat_minutes: 30
+  # A message counts as "arrived" once the provider reports it delivered. Reports take
+  # seconds; if one never comes, a send this old is treated as success rather than
+  # holding the alarm open on a missing receipt.
+  assume_delivered_after_minutes: 15

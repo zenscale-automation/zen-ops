@@ -73,6 +73,7 @@ def get_config():
             "reasons": cfg.reasons,
             "routing": cfg.routing,
             "escalation": cfg.escalation,
+            "alerts": cfg.alerts,
             "source": cfg.source,     # readable, but restart-only to change
         },
     })
@@ -84,7 +85,7 @@ def get_scope(scope: str):
     if denied:
         return denied
     cfg = current_app.config["OPS_CFG"]
-    if scope not in ("reasons", "routing", "escalation", "source"):
+    if scope not in ("reasons", "routing", "escalation", "alerts", "source"):
         return jsonify({"error": f"unknown scope '{scope}'"}), 404
     return jsonify({"version": cfg.version, "scope": scope,
                     "effective": getattr(cfg, scope),

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 
 from .. import clock, config, db
-from . import escalation, incidents
+from . import escalation, incidents, watchdog
 
 log = logging.getLogger("ops.ticker")
 
@@ -66,4 +66,10 @@ def tick(cfg: "config.Config") -> dict:
             except Exception:
                 log.exception("could not park escalation %s", r["id"])
 
-    return {"resolved": len(resolving), "fired": fired, "wedged": wedged}
+    # 3) report on ops-core itself — is the send path reaching phones, and is the daily
+    # digest due. Last, and never allowed to raise: the plant's escalations must not stop
+    # firing because an alert about them could not be composed.
+    alerts = watchdog.check(cfg)
+
+    return {"resolved": len(resolving), "fired": fired, "wedged": wedged,
+            "alerts": alerts}

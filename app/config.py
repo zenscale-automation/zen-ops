@@ -25,7 +25,7 @@ log = logging.getLogger("ops.config")
 # without rebuilding the adapter would appear to work and silently do nothing — and
 # rebuilding it mid-shift discards the API cursor and the per-loom state. Source
 # changes stay a restart.
-EDITABLE_SCOPES = ("reasons", "routing", "escalation")
+EDITABLE_SCOPES = ("reasons", "routing", "escalation", "alerts")
 # `source` is a half-member: its override is STORED like the others and applied at BOOT,
 # but never hot-swapped — the feed adapter reads these settings once when it is built,
 # so a live swap would either silently do nothing or force an adapter rebuild that
@@ -71,6 +71,7 @@ class Config:
     routing: dict = field(default_factory=dict)
     escalation: dict = field(default_factory=dict)
     source: dict = field(default_factory=dict)
+    alerts: dict = field(default_factory=dict)
     version: int = 0
 
     def db_params(self) -> dict:
@@ -203,6 +204,14 @@ class Config:
         return self.escalation.get("recurrence", {}) or {}
 
     # source
+    @property
+    def daily_digest(self) -> dict:
+        return (self.alerts.get("daily_digest") or {})
+
+    @property
+    def send_watchdog(self) -> dict:
+        return (self.alerts.get("send_watchdog") or {})
+
     def source_setting(self, key: str, default=None):
         return (self.source.get("settings", {}) or {}).get(key, default)
 
@@ -336,6 +345,7 @@ def load() -> Config:
         routing=_read_yaml(dept_dir / "routing.yaml"),
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
         source=_read_yaml(dept_dir / "source.yaml"),
+        alerts=_read_yaml(dept_dir / "alerts.yaml"),
     )
     apply_overrides(cfg, load_overrides())
     validate(cfg)
@@ -365,6 +375,7 @@ def candidate(cfg: Config, overrides: dict) -> Config:
         routing=_read_yaml(dept_dir / "routing.yaml"),
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
         source=_read_yaml(dept_dir / "source.yaml"),
+        alerts=_read_yaml(dept_dir / "alerts.yaml"),
     )
     apply_overrides(trial, overrides)
     return trial
@@ -384,7 +395,14 @@ def reload_into(cfg: Config, overrides: dict) -> None:
         cfg.reasons = trial.reasons
         cfg.routing = trial.routing
         cfg.escalation = trial.escalation
+        cfg.alerts = trial.alerts
         cfg.version += 1
+
+
+
+def _hhmm_parts(text: str) -> tuple[int, int]:
+    hh, mm = text.strip().split(":")
+    return int(hh), int(mm)
 
 
 def validate(cfg: Config) -> None:
@@ -550,6 +568,30 @@ def validate(cfg: Config) -> None:
     # source adapter named
     if not cfg.source.get("adapter"):
         problems.append("source.yaml: no adapter named")
+
+    # alerts.yaml — the watchdog that reports on this system's own silence. A typo here
+    # disables the only alarm that fires when nothing else can, so it is checked with
+    # the same seriousness as a routing mistake.
+    digest = cfg.daily_digest
+    if digest.get("enabled", True):
+        try:
+            hh, mm = _hhmm_parts(str(digest.get("at", "06:15")))
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError
+        except Exception:
+            problems.append(
+                f"alerts.yaml: daily_digest.at must be HH:MM in 24-hour local time, "
+                f"got {digest.get('at')!r}")
+    watch = cfg.send_watchdog
+    if watch.get("enabled", True):
+        try:
+            if float(watch.get("repeat_minutes", 30)) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            problems.append(
+                f"alerts.yaml: send_watchdog.repeat_minutes must be a positive number "
+                f"of minutes, got {watch.get('repeat_minutes')!r} — a zero or negative "
+                f"interval would repost the same alarm on every tick")
 
     if problems:
         raise ConfigError(
