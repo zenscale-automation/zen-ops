@@ -261,6 +261,22 @@ ALTER TABLE opscore_outbox ADD COLUMN delivery_status VARCHAR(16) NULL;
 
 ALTER TABLE opscore_outbox ADD COLUMN delivery_error VARCHAR(255) NULL;
 
+-- ===== 007_alert_state.sql =====
+-- Somewhere to remember that an alert is already in flight.
+--
+-- The watchdog needs one fact across restarts: whether the send path was already down
+-- last time it looked. Without it, a restart re-raises an alarm that is already raised,
+-- and the recovery message ("sending works again") has nothing to compare against.
+-- Deliberately a tiny key/value table rather than a column on something else — this is
+-- the system's opinion about ITSELF, and it belongs nowhere near plant data.
+
+CREATE TABLE IF NOT EXISTS opscore_alert_state (
+  name       VARCHAR(64)  NOT NULL,
+  value      VARCHAR(191) NULL,
+  updated_at CHAR(25)     NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ===== bookkeeping =====
 CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
   name VARCHAR(191) NOT NULL,
@@ -280,3 +296,5 @@ INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('005_ticket_eta.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
 INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('006_delivery_status.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('007_alert_state.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
