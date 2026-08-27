@@ -163,7 +163,7 @@ def check_send_path(cfg) -> dict:
         minutes = round((clock.parse(st["last_success_at"] or clock.now_iso())
                          - clock.parse(was)).total_seconds() / 60)
         text = (f"✅ *WhatsApp sending is working again.*\n"
-                f"Down for about {minutes} min (since {clock.format_ist(was)} IST). "
+                f"Down for about {minutes} min (since {clock.format_ist(was)}). "
                 f"Messages queued during the outage were retried; anything that had "
                 f"already given up is on the /report page as unanswered.")
         _enqueue(text, f"alert:send-up:{was}")
@@ -189,7 +189,7 @@ def check_send_path(cfg) -> dict:
         head = "🔴 *WhatsApp sending is DOWN.*"
     else:
         head = (f"🔴 *WhatsApp still down — {round(elapsed)} min* "
-                f"(since {clock.format_ist(down_since)} IST).")
+                f"(since {clock.format_ist(down_since)}).")
     text = (f"{head}\n"
             f"{n_failed} message(s) have not reached anyone.\n"
             f"Provider says: {reason}\n"
@@ -215,7 +215,7 @@ def _digest_text(cfg, window_hours: float) -> str:
     total_assets = db.query_one(
         "SELECT COUNT(*) n FROM assets WHERE active=1")["n"]
 
-    lines = [f"📋 *Daily status — {now_ist} IST*", ""]
+    lines = [f"📋 *Daily status — {now_ist}*", ""]
     if open_rows:
         lines.append(f"*Stopped now: {len(open_rows)} of {total_assets} machines*")
         for r in open_rows[:10]:
@@ -271,7 +271,7 @@ def _digest_text(cfg, window_hours: float) -> str:
     st = send_path_state(cfg)
     if st["down"]:
         lines += ["", f"⚠️ *WhatsApp sending is down since "
-                      f"{clock.format_ist(st['down_since'])} IST* — the questions above "
+                      f"{clock.format_ist(st['down_since'])}* — the questions above "
                       f"are not reaching anyone."]
     return "\n".join(lines)
 
