@@ -216,19 +216,17 @@ def _has_reason(c, incident_id: int) -> bool:
     return bool(row and row["n"])
 
 
-def _ask_reached_anyone(c, esc_row, grace_minutes: float = 15) -> bool:
-    """Did any question about this incident/ticket actually arrive?
+def _ask_reached_anyone(c, esc_row) -> bool:
+    """Is there a question about this incident/ticket that reached them, or is on its way?
 
-    A message with no delivery report at all, sent long enough ago that one would have
-    come, counts as arrived: reports can stop for reasons of their own, and holding the
-    loop open on a missing receipt would chase nobody forever.
+    False only when every ask we sent is known to have died — which is the case that
+    must not produce a reminder, because there is no answer to chase.
     """
     tag = (f"tkt:{esc_row['ticket_id']}:" if esc_row["ticket_id"]
            else f"inc:{esc_row['incident_id']}:")
     rows = c.execute(
         "SELECT status, delivery_status, sent_at, payload FROM outbox"
         " WHERE dedupe_key LIKE ?", (tag + "%",)).fetchall()
-    cutoff = clock.plus_seconds(-60 * grace_minutes)
     for r in rows:
         try:
             payload = json.loads(r["payload"]) or {}
@@ -236,10 +234,15 @@ def _ask_reached_anyone(c, esc_row, grace_minutes: float = 15) -> bool:
             continue
         if payload.get("type") not in _ASKS:
             continue
-        if r["delivery_status"] in ("delivered", "read"):
-            return True
-        if (r["status"] == "sent" and r["delivery_status"] is None
-                and r["sent_at"] and r["sent_at"] <= cutoff):
+        # Only a DEFINITE failure means nobody was asked. Anything else — delivered,
+        # read, an interim receipt, or still on its way — is a question that is either
+        # with them or about to be, and re-asking on top of it just doubles up.
+        #
+        # Asking the opposite question ("is it definitely delivered?") is what jammed
+        # the loop: a report of 'submitted' is neither a success nor a failure, so a row
+        # stuck there satisfied no branch and every reminder became another "how many
+        # hours?", hourly, forever.
+        if r["status"] != "failed" and r["delivery_status"] != "failed":
             return True
     return False
 
@@ -267,6 +270,20 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
         owner_role = None
         code = None
         ticket = None
+
+    # Two different clocks, deliberately separated.
+    #
+    # base_iso schedules the ladder: a ticket's rungs are measured from when the TICKET
+    # opened, because that is when the repair became somebody's job.
+    #
+    # down_since is what the message SAYS, and it must be when the LOOM stopped. A
+    # ticket opens the moment the supervisor answers the reason question, which is at
+    # least twenty minutes after the stop — so measuring the sentence from the ticket
+    # told a fitter "still down, 25 min" about a loom that had been dead for 47, and the
+    # reason prompt he had received twenty minutes earlier said 20. Two messages about
+    # one loom, and the downtime went UP by five. The number is the one thing on that
+    # message anybody acts on.
+    down_since = incident["opened_at"] if incident else base_iso
 
     # If the asset has resumed (or is inside its resolve grace), don't page anyone.
     if incident is None or incident["status"] in ("resolving", "resolved"):
@@ -361,7 +378,7 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
         }
         event_kind = models.K_PROMPTED
     else:
-        minutes = max(1, round((clock.now() - clock.parse(base_iso)).total_seconds() / 60))
+        minutes = max(1, round((clock.now() - clock.parse(down_since)).total_seconds() / 60))
         asset_disp = asset_ref.replace("_", " ").title()
         if code:
             reason_label = cfg.label(code, "en")
@@ -380,7 +397,7 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
             "asset_label": asset_disp,
             "reason_label": (cfg.label(code, "en") if code else "Not yet reported"),
             "minutes_down": minutes,
-            "opened_at": base_iso,
+            "opened_at": down_since,
             "incident_id": incident["id"],
             "ticket_id": esc_row["ticket_id"],
             "rung": esc_row["rung"],
@@ -437,4 +454,10 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
                        "trigger": esc_row["trigger"]},
                department=cfg.department, at=now)
 
-    _schedule_next(c, cfg, esc_row, base_iso, ladder)
+    # After a lapsed estimate the ladder restarts from NOW, not from when the ticket
+    # opened. Measuring the next rungs from an opening that is hours in the past makes
+    # every one of them due immediately: the re-ask went out, and rungs 1 and 2 fired on
+    # the next two ticks — three messages inside ninety seconds, two of them reading as
+    # a brand-new fault because only the eta_check carries the missed hours.
+    next_base = now if esc_row["action"] == "eta_check" else base_iso
+    _schedule_next(c, cfg, esc_row, next_base, ladder)
