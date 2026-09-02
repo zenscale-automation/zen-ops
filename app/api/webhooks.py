@@ -123,6 +123,11 @@ def _pickyassist_message(data: dict) -> dict | None:
         "sender": str(data.get("number") or ""),
         "text": text.strip(),
         "provider_id": str(data.get("unique-id") or ""),
+        # WhatsApp attaches the id of the message being replied to, and PickyAssist
+        # passes it through as context-msg-id — the same value we stored as
+        # provider_msg_id when we sent the question. It turns "which question is this
+        # answering?" from a guess into a lookup.
+        "context_msg_id": str(data.get("context-msg-id") or "") or None,
     }
 
 
@@ -161,6 +166,47 @@ def _person_by_contact(cfg, channel: str, address: str) -> str | None:
                 return pid
         elif have == address:
             return pid
+    return None
+
+
+def _question_from_context(context_msg_id: str | None) -> dict | None:
+    """The exact question this reply was attached to, or None if we do not recognise it.
+
+    WhatsApp tells us which message a person replied to. When we sent that message we
+    stored its provider id, so this is an exact join rather than the "most recent
+    outstanding question" guess below — and the guess is genuinely ambiguous: the reason
+    menu and the hours estimate are both answered with a bare number, and a supervisor
+    with two stopped looms has two identical-looking questions on one screen.
+    """
+    if not context_msg_id:
+        return None
+    row = db.query_one("SELECT payload FROM outbox WHERE provider_msg_id=?",
+                       (str(context_msg_id),))
+    if not row:
+        return None
+    return json.loads(row["payload"]) or {}
+
+
+def _answer_target(question: dict) -> dict | None:
+    """What a reply to this specific question may still change — None once it is answered.
+
+    This is where "only the first answer counts" is enforced. A second reply to a
+    question that already has its answer must change nothing: not the original (the
+    first answer is the record), and above all not some OTHER incident, which is what
+    falling back to the most-recent-question guess would do.
+    """
+    kind = question.get("type")
+    if kind == "eta_request" and question.get("ticket_id"):
+        t = db.query_one("SELECT status, eta_due_at FROM tickets WHERE id=?",
+                         (question["ticket_id"],))
+        if t and t["status"] != "closed" and (
+                not t["eta_due_at"] or t["eta_due_at"] <= clock.now_iso()):
+            return {"kind": "eta", "ticket_id": question["ticket_id"]}
+        return None
+    if kind == "reason_prompt" and question.get("incident_id"):
+        if _incident_open_no_reason(question["incident_id"]):
+            return {"kind": "reason", "incident_id": question["incident_id"]}
+        return None
     return None
 
 
@@ -272,7 +318,25 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
     # estimate is checked FIRST because it is the newer question by construction — it is
     # only ever sent after they have already answered the reason menu.
     stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
-    question = _last_question_to(stored_sender, channel)
+
+    # If the person used WhatsApp's reply-to, we know EXACTLY which question this
+    # answers and no guessing is needed or wanted.
+    asked = _question_from_context(context_msg_id)
+    if asked is not None:
+        target = _answer_target(asked)
+        if target is None:
+            # We recognise the message and it is already answered (or its incident is
+            # closed). Ignoring it is the whole point: the alternative — falling through
+            # to "their most recent outstanding question" — would take a duplicate tap
+            # on an old message and record it against an unrelated loom.
+            log.info("reply from %s answers an already-answered question (%s) — ignored",
+                     sender, asked.get("type"))
+            return jsonify({"matched": False, "reason": "already answered",
+                            "raw_id": raw_id}), 200
+        question = target
+    else:
+        question = _last_question_to(stored_sender, channel)
+
     if question and question["kind"] == "eta":
         hours = prompts.parse_eta(text)
         if hours is not None:
@@ -288,7 +352,10 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
         # Not a parseable estimate: fall through — it may be a reason for a DIFFERENT
         # incident, and eating it here would lose that answer.
 
-    incident_id = _find_incident(cfg, channel, sender, context_msg_id, asset_ref)
+    if question and question["kind"] == "reason":
+        incident_id = question["incident_id"]
+    else:
+        incident_id = _find_incident(cfg, channel, sender, context_msg_id, asset_ref)
     parsed = prompts.parse(cfg, text)
     if text and not parsed:
         # Loud on purpose. An unparsed reply means a human answered and the system did
@@ -350,8 +417,7 @@ def whatsapp():
     picky = _pickyassist_message(data)
     if picky:
         return _handle("whatsapp", picky["sender"], picky["text"],
-                       None,   # PickyAssist carries no reply-to; see _find_incident
-                       None, raw_id=raw_id)
+                       picky.get("context_msg_id"), None, raw_id=raw_id)
 
     messages = _extract_meta_messages(data)
     if not messages:
