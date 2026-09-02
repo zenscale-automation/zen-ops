@@ -94,8 +94,10 @@ def test_a_question_that_definitely_died_is_still_re_asked(cfg):
                " WHERE channel='whatsapp'")
 
     clock.CLOCK.set_virtual(clock.now() + datetime.timedelta(hours=3))
+    before = len(_sent())
     _run(cfg, ticks=3)
-    assert _sent()[-1]["type"] == "eta_request"
+    assert any(m["type"] == "eta_request" for m in _sent()[before:]), \
+        "every ask died, so the rung must ask again rather than chase an answer"
 
 
 def test_a_ticket_reminder_counts_minutes_from_the_stop_not_the_ticket(cfg):

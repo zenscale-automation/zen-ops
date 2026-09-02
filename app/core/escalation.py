@@ -296,6 +296,9 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
                                  owner_role=owner_role)
     action = esc_row["action"]
+    # Captured before the eta_check branch below rewrites both `action` and `esc_row`:
+    # the scheduling of the NEXT rung depends on what this rung originally was.
+    was_eta_check = action == "eta_check"
 
     # Never chase somebody about a question they never received.
     #
@@ -459,5 +462,5 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     # every one of them due immediately: the re-ask went out, and rungs 1 and 2 fired on
     # the next two ticks — three messages inside ninety seconds, two of them reading as
     # a brand-new fault because only the eta_check carries the missed hours.
-    next_base = now if esc_row["action"] == "eta_check" else base_iso
+    next_base = now if was_eta_check else base_iso
     _schedule_next(c, cfg, esc_row, next_base, ladder)
