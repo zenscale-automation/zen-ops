@@ -22,7 +22,7 @@ reasons.yaml, and changing which reasons appear needs a new template approved. T
 why the admin API refuses to edit the prompt list.
 
 If nothing is configured this falls back to the log notifier, so Phase 1 runs with zero
-credentials. In shadow mode the registry never constructs this class at all.
+credentials.
 
 PickyAssist returns HTTP 200 with an error body, so `raise_for_status()` is worse than
 useless here: it never fires, and a failed send would be recorded as delivered.
@@ -217,18 +217,12 @@ class WhatsAppNotifier:
     def build(self, recipient: str, payload: dict) -> dict:
         to = normalise_msisdn(recipient)
         template_id, _, _ = self.template_for(payload)
-        # A number whose DISPLAY NAME Meta has not yet approved can deliver templates
-        # but not free-form messages — error 131037, discovered live: PickyAssist
-        # answers 100, the message dies at Meta, and only their panel's error log says
-        # why. Until the name clears, this flag forces every send down the template
-        # path, because a terser message that arrives beats a perfect one that
-        # silently does not.
-        force_template = os.environ.get(
-            "PICKYASSIST_FORCE_TEMPLATE", "").lower() in ("1", "true", "yes")
-        # No approved template for this message type yet? Free text is the only thing
-        # left to try. It fails with 802 outside a window, which is at least a loud,
-        # attributable failure rather than sending nothing.
-        if not template_id or (self.window_open(recipient) and not force_template):
+        # Inside the 24-hour service window free text is allowed and reads better;
+        # outside it, only an approved template is delivered at all. No approved template
+        # for this message type yet? Free text is the only thing left to try. It fails
+        # with 802 outside a window, which is at least a loud, attributable failure
+        # rather than sending nothing.
+        if not template_id or self.window_open(recipient):
             return self._text_body(to, payload)
         return self._template_body(to, payload)
 

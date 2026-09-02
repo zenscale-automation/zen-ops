@@ -121,30 +121,17 @@ bookkeeping that is missing. Pull the current `migrations/001_init.sql` and boot
 it will reconcile itself. On a first deploy with no data yet, dropping the `opscore_*`
 tables in phpMyAdmin and letting boot recreate them is equally safe.
 
-## 6. Shadow mode
+## 6. Who gets messaged
 
-This deployment ships with `OPS_SHADOW_MODE=true
+There is no "do not really send" switch. A message queued for a person is sent to that
+person, and who that is comes from one place: the roster, edited in the dashboard or
+through `/api/admin/*`. Two guards keep that honest at boot:
 
-# Required for runtime config edits via /api/config. Unset = writes refused.
-OPS_ADMIN_API_KEY=`. The full pipeline runs — poll,
-classify, route, escalate, and write every event to MySQL — but no message goes out on
-any channel. Everything that *would* have been sent lands in `logs/notifications.log`,
-tagged with the channel it was destined for.
-
-It is a single explicit switch rather than the side effect of blank credential fields,
-because the placeholder roster in `routing.yaml` carries validly-formatted Indian mobile
-numbers. Without the switch, the day someone pastes in a BSP token to test the wiring,
-ops-core starts texting strangers. Two things make that impossible:
-
-- every channel resolves to the log notifier while shadow mode is on, credentials or not;
-- with shadow mode **off**, ops-core refuses to boot while any routed person still has
-  `placeholder: true` — it fails loudly with the list, the same way a bad reason code does.
-
-Nothing to do here — it is already set in `.env`. Step 8 confirms it once the app is up.
-
-Going live later is three steps: replace the people block in `routing.yaml` with the real
-roster and drop the `placeholder` flags, set the channel credentials in `.env`, then set
-`OPS_SHADOW_MODE=false` and restart.
+- ops-core refuses to start while any routed person still has `placeholder: true` — those
+  invented numbers belong to strangers, and it fails loudly with the list;
+- it also refuses to start when people are routed over a channel whose credentials are
+  missing, because the notifier would quietly fall back to a log file and record every
+  page as sent.
 
 ## 7. Fleet size — retune as looms come online
 
@@ -173,17 +160,15 @@ Boot is loud on purpose: a config typo or a refused DB connection kills it with 
 reason. Two lines you should see immediately:
 
 ```
-WARNING ops SHADOW MODE — no message will be sent on any channel ...
+INFO ops workers started: poller(30s) ticker(30s) outbox(5s)
 INFO    ops ops-core serving on http://127.0.0.1:8000
 ```
 
-If the SHADOW MODE line says LIVE MODE instead, stop and fix `.env` before going
-further — the placeholder roster guard should have prevented boot, so something is off.
 
 From a second shell on the box, with the app still running:
 
 ```bash
-curl -s localhost:8000/health          # "ok": true, "shadow_mode": true, both workers
+curl -s localhost:8000/health          # "ok": true, both workers beating
 ```
 
 Then check `automation` in phpMyAdmin: nine `opscore_*` tables. Within a poll cycle
@@ -324,7 +309,7 @@ month.
 ### Flip the switch
 
 Only after the roster is real: replace the people block in `routing.yaml`, drop the
-`placeholder` flags, then set `OPS_SHADOW_MODE=false` and restart. Boot will refuse
+`placeholder` flags, then restart. Boot will refuse
 while any placeholder remains.
 
 ## 10c. Changing config at runtime

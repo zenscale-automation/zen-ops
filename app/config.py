@@ -66,7 +66,6 @@ class Config:
     db_password: str
     db_name: str
     table_prefix: str
-    shadow_mode: bool = True
     reasons: dict = field(default_factory=dict)
     routing: dict = field(default_factory=dict)
     escalation: dict = field(default_factory=dict)
@@ -339,8 +338,6 @@ def load() -> Config:
         db_password=_env("OPS_DB_PASSWORD", ""),
         db_name=_env("OPS_DB_NAME", "ops_core"),
         table_prefix=_env("OPS_TABLE_PREFIX", ""),
-        shadow_mode=str(_env("OPS_SHADOW_MODE", "true")).strip().lower()
-        not in ("0", "false", "no", "off"),
         reasons=_read_yaml(dept_dir / "reasons.yaml"),
         routing=_read_yaml(dept_dir / "routing.yaml"),
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
@@ -370,7 +367,6 @@ def candidate(cfg: Config, overrides: dict) -> Config:
         port=cfg.port, default_channel=cfg.default_channel, db_host=cfg.db_host,
         db_port=cfg.db_port, db_user=cfg.db_user, db_password=cfg.db_password,
         db_name=cfg.db_name, table_prefix=cfg.table_prefix,
-        shadow_mode=cfg.shadow_mode,
         reasons=_read_yaml(dept_dir / "reasons.yaml"),
         routing=_read_yaml(dept_dir / "routing.yaml"),
         escalation=_read_yaml(dept_dir / "escalation.yaml"),
@@ -408,45 +404,38 @@ def _hhmm_parts(text: str) -> tuple[int, int]:
 def validate(cfg: Config) -> None:
     problems: list[str] = []
 
-    # Shadow mode is a DECISION, not the accident of an unfilled credential field.
-    # The mock roster carries validly-formatted Indian mobile numbers; the moment a BSP
-    # token is set they become live targets and ops-core starts texting strangers.
-    # Leaving shadow mode with placeholder people in routing.yaml is therefore a boot
-    # failure, in the same spirit as every other config check here.
-    if not cfg.shadow_mode:
-        placeholders = sorted(
-            pid for pid, person in cfg.people.items() if person.get("placeholder")
+    # Invented people are validly-formatted Indian mobile numbers belonging to strangers.
+    # Every message this system sends is sent for real, so a roster still carrying sample
+    # entries is a boot failure rather than something a switch elsewhere makes safe.
+    placeholders = sorted(
+        pid for pid, person in cfg.people.items() if person.get("placeholder")
+    )
+    if placeholders:
+        problems.append(
+            "routing.yaml still contains placeholder people: "
+            f"{', '.join(placeholders)}. Replace them with the real roster and remove "
+            "`placeholder: true` — these numbers belong to somebody."
         )
-        if placeholders:
-            problems.append(
-                "OPS_SHADOW_MODE is off but routing.yaml still contains placeholder "
-                f"people: {', '.join(placeholders)}. Replace them with the real roster "
-                "and remove `placeholder: true`, or set OPS_SHADOW_MODE=true."
-            )
 
-    # Going live with no provider credentials is silent, not loud: the notifier falls
-    # back to the log, returns a log-<uuid> id, and the outbox records status='sent'.
-    # The log line is byte-identical to shadow mode's, so logs/notifications.log cannot
-    # distinguish "working as designed" from "live and reaching nobody", and /health
-    # reports shadow_mode:false ok:true throughout. Every page for an entire pilot could
-    # be a line in a file with a green dashboard above it. Refuse to boot instead.
-    if not cfg.shadow_mode:
-        channels = set()
-        for person in cfg.people.values():
-            if person.get("whatsapp"):
-                channels.add("whatsapp")
-            elif person.get("gchat_space"):
-                channels.add("gchat")
-        if "whatsapp" in channels and not _env("PICKYASSIST_TOKEN"):
-            problems.append(
-                "OPS_SHADOW_MODE is off and people are routed over WhatsApp, but "
-                "PICKYASSIST_TOKEN is not set. Every message would be written to "
-                "logs/notifications.log and recorded as sent.")
-        if "gchat" in channels and not _env("GCHAT_WEBHOOK_BASE_URL"):
-            problems.append(
-                "OPS_SHADOW_MODE is off and people are routed over Google Chat, but "
-                "GCHAT_WEBHOOK_BASE_URL is not set. Those messages would be written to "
-                "a log file and recorded as sent.")
+    # Running with no provider credentials is silent, not loud: the notifier falls back
+    # to the log, returns a log-<uuid> id, and the outbox records status='sent'. Every
+    # page for an entire pilot could be a line in a file with a green dashboard above it.
+    # Refuse to boot instead.
+    channels = set()
+    for person in cfg.people.values():
+        if person.get("whatsapp"):
+            channels.add("whatsapp")
+        elif person.get("gchat_space"):
+            channels.add("gchat")
+    if "whatsapp" in channels and not _env("PICKYASSIST_TOKEN"):
+        problems.append(
+            "people are routed over WhatsApp but PICKYASSIST_TOKEN is not set. Every "
+            "message would be written to logs/notifications.log and recorded as sent.")
+    if "gchat" in channels and not _env("GCHAT_WEBHOOK_BASE_URL") \
+            and not _env("GCHAT_WEBHOOK_URL"):
+        problems.append(
+            "people are routed over Google Chat but no webhook is configured. Those "
+            "messages would be written to a log file and recorded as sent.")
 
     if not cfg.codes:
         problems.append("reasons.yaml: no codes defined")

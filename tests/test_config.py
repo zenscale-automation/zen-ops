@@ -49,45 +49,16 @@ def test_missing_unknown_ladder_fails():
     assert "unknown" in str(exc.value)
 
 
-# --- shadow mode --------------------------------------------------------------
+# --- going live safely --------------------------------------------------------
 
-def test_shadow_mode_forces_every_channel_to_the_log_notifier(cfg):
-    """Shadow mode must not depend on credentials being blank: even with a BSP token
-    and a Chat webhook configured, nothing may leave the box."""
-    import os
-    from app.notifiers import get_notifier, reset_cache
-    from app.notifiers.log import LogNotifier
-
-    # The real provider credentials, so the test proves shadow mode wins even when a
-    # live send is fully possible — not merely when it would have failed anyway.
-    os.environ["PICKYASSIST_TOKEN"] = "live-token"
-    os.environ["GCHAT_WEBHOOK_BASE_URL"] = "https://chat.googleapis.com"
-    try:
-        cfg.shadow_mode = True
-        reset_cache()
-        for channel in ("whatsapp", "gchat", "log"):
-            assert isinstance(get_notifier(cfg, channel), LogNotifier), channel
-
-        cfg.shadow_mode = False      # live mode picks the real notifiers back up
-        reset_cache()
-        assert type(get_notifier(cfg, "whatsapp")).__name__ == "WhatsAppNotifier"
-        assert type(get_notifier(cfg, "gchat")).__name__ == "GChatNotifier"
-    finally:
-        for k in ("PICKYASSIST_TOKEN", "GCHAT_WEBHOOK_BASE_URL"):
-            os.environ.pop(k, None)
-        cfg.shadow_mode = True
-        reset_cache()
-
-
-def test_live_mode_with_a_placeholder_roster_refuses_to_start(cfg):
-    """The guard still exists even though the shipped roster no longer carries
-    placeholders — anyone re-adding a person with `placeholder: true` (a template, a
-    half-finished migration) must be stopped from going live against them. The invented
-    number used here is the same shape the old sample roster used."""
+def test_a_placeholder_roster_refuses_to_start(cfg):
+    """Invented numbers belong to strangers. Anyone re-adding a person with
+    `placeholder: true` (a template, a half-finished migration) must be stopped before
+    the system pages them. The invented number here is the shape the old sample roster
+    used."""
     trial = config.candidate(cfg, {"routing": {"people": {"temp_p": {
         "name": "Temp", "whatsapp": "+919000000099", "placeholder": True}},
         "roles": {"engineering": {"all": ["shailendra", "temp_p"]}}}})
-    trial.shadow_mode = False
     import os
     os.environ.setdefault("PICKYASSIST_TOKEN", "x")   # isolate the placeholder check
     try:

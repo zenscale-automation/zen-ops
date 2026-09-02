@@ -13,14 +13,24 @@ BASE = datetime(2026, 8, 5, 4, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
-def _force_template_off(monkeypatch):
-    # The live box keeps PICKYASSIST_FORCE_TEMPLATE=1 in .env (display-name era), and
-    # config.load() pulls .env into the process — so without this, every test that
-    # asserts free-text-window behaviour changes meaning depending on which machine
-    # runs the suite. Set to "" rather than deleted: load_dotenv never overrides an
-    # existing variable, so this wins whatever order fixtures run in, and the notifier
-    # reads "" as off. Tests that want the flag set it explicitly.
-    monkeypatch.setenv("PICKYASSIST_FORCE_TEMPLATE", "")
+def _keep_the_network_out(monkeypatch):
+    """No test may send a real message.
+
+    ops-core has no "do not really send" switch — a message queued for a person is a
+    message sent to that person, decided by the roster alone. That makes keeping the
+    suite off the wire a property of the SUITE, which is where it belongs: the tests run
+    against a real database with the live box's .env, so without this every drain would
+    put a WhatsApp message on somebody's actual phone. Tests that exercise the provider
+    itself construct their notifier directly and stub requests.post.
+    """
+    from app import notifiers
+    from app.notifiers.log import LogNotifier
+
+    notifiers.reset_cache()
+    monkeypatch.setattr(notifiers, "get_notifier",
+                        lambda cfg, channel: LogNotifier(cfg, via=channel))
+    yield
+    notifiers.reset_cache()
 
 
 @pytest.fixture()

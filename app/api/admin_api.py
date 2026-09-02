@@ -239,7 +239,6 @@ def overview():
         "backstop": cfg.routing.get("default_owner"),
         "department": cfg.department,
         "asset_type": cfg.asset_type,
-        "shadow_mode": cfg.shadow_mode,
         "writes_enabled": _authorised()[0] or "key required",
         "overridden_scopes": sorted(overrides.keys()),
         "teams": teams,
@@ -262,7 +261,6 @@ def overview():
             "prompt_list_locked": "Which reasons appear in the WhatsApp prompt is fixed by "
                                   "the approved template. Changing it needs a new template "
                                   "approved by Meta, so it is not editable here.",
-            "shadow_mode": "No message leaves the box while shadow mode is on.",
         },
     })
 
@@ -880,7 +878,6 @@ def simulate():
 
     return jsonify({
         "reason": code, "plan": BUILTIN_PLANS.get(key, key), "at": when, "shift": shift,
-        "shadow_mode": cfg.shadow_mode,
         "steps": out,
         "any_unrouted": any(s["unrouted"] for s in out),
     })

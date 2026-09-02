@@ -524,8 +524,8 @@ function renderHeader() {
   $("#deptPill").textContent = STATE.department;
   $("#buildPill").textContent = "v" + STATE.version + " / " + (STATE.build || "?");
   var p = $("#sendPill");
-  p.className = "pill " + (STATE.shadow_mode ? "warn" : "good");
-  p.textContent = STATE.shadow_mode ? "Nothing is being sent" : "Live, messages are sent";
+  p.className = "pill good";
+  p.textContent = "Messages are sent";
 }
 
 /* ------------------------------------------------------- 1. what is true now */
@@ -597,10 +597,6 @@ function renderNextSteps() {
   var samples = STATE.people.filter(function (p) { return p.placeholder; });
   var items = [];
 
-  if (STATE.shadow_mode) {
-    items.push(["warn", "Nothing is being sent to anybody yet. The whole chain runs and "
-      + "every message is written to a log file instead."]);
-  }
   if (samples.length) {
     items.push(["warn", samples.length + " people still have invented sample numbers ("
       + samples.slice(0, 3).map(function (p) { return p.name; }).join(", ")

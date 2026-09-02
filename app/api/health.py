@@ -49,5 +49,5 @@ def health():
     cfg = current_app.config.get("OPS_CFG")
     body = {"ok": ok, "now": clock.now_iso(), "stale_workers": stale,
             "problems": problems, "last_poll_age_s": poll_age,
-            "shadow_mode": bool(getattr(cfg, "shadow_mode", True)), **h}
+            **h}
     return jsonify(body), (200 if ok else 503)

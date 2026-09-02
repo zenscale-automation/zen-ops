@@ -201,17 +201,3 @@ def test_unconfigured_falls_back_to_the_log_notifier(cfg, monkeypatch):
     monkeypatch.delenv("PICKYASSIST_TOKEN", raising=False)
     out = WhatsAppNotifier(cfg).send("+919000000005", {"text": "x"})
     assert out.startswith("log-")
-
-
-def test_force_template_overrides_an_open_window(cfg, monkeypatch):
-    """Meta blocks free-form sends from a number whose display name is unapproved
-    (131037) while still delivering templates. Found live: PickyAssist accepts the
-    free text, Meta drops it, and nothing on our side errors. The flag routes every
-    send down the path that actually arrives."""
-    monkeypatch.setenv("PICKYASSIST_TOKEN", "t")
-    monkeypatch.setenv("PICKYASSIST_PROMPT_TEMPLATE_ID", PROMPT_TID)
-    monkeypatch.setenv("PICKYASSIST_FORCE_TEMPLATE", "1")
-    _inbound("919000000005")                        # window is open…
-    n2 = WhatsAppNotifier(cfg)
-    body = n2.build("+919000000005", {"type": "reason_prompt", "asset_ref": "loom_91"})
-    assert body.get("template_id") == PROMPT_TID, "…but the template path must win"

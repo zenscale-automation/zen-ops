@@ -27,14 +27,6 @@ def create_app(start_workers: bool = False, cfg: "config.Config | None" = None) 
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     cfg = cfg or config.load()
-    if cfg.shadow_mode:
-        logging.getLogger("ops").warning(
-            "SHADOW MODE — no message will be sent on any channel. Every outbound "
-            "message is written to logs/notifications.log instead. Set "
-            "OPS_SHADOW_MODE=false (and replace the placeholder roster) to go live.")
-    else:
-        logging.getLogger("ops").warning(
-            "LIVE MODE — messages will be delivered to real people on real channels.")
     db.init(cfg.db_params(), cfg.table_prefix)
 
     # config.load() ran before the database existed, so load_overrides() failed inside it
