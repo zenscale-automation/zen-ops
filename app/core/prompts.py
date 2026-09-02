@@ -50,7 +50,8 @@ def render(cfg: "config.Config", asset_ref: str, opened_at_iso: str,
     # The loom number goes in the reply instruction, not just the greeting: with two
     # looms stopped, two of these sit on one screen and a bare "1" is a coin toss.
     lines = [f"{label} has been stopped for {minutes} minutes.", "",
-             f"Reply with the loom number and the reason, e.g. {number} 1:"]
+             f"Reply with the {cfg.asset_type} number and the reason, "
+             f"e.g. {number} 1:"]
     for o in options(cfg):
         lines.append(f"  {number} {o['n']}  {o['label']}")
     # Computed by the caller from the ladder that will actually run — the single source
