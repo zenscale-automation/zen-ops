@@ -21,7 +21,7 @@ import os
 from flask import Blueprint, current_app, jsonify, request
 
 from .. import clock, db
-from ..core import escalation, incidents, outbox, prompts
+from ..core import escalation, events, incidents, outbox, prompts
 from ..notifiers.whatsapp import normalise_msisdn
 
 bp = Blueprint("webhooks", __name__)
@@ -199,8 +199,10 @@ def _answer_target(question: dict) -> dict | None:
     if kind == "eta_request" and question.get("ticket_id"):
         t = db.query_one("SELECT status, eta_due_at FROM tickets WHERE id=?",
                          (question["ticket_id"],))
-        if t and t["status"] != "closed" and (
-                not t["eta_due_at"] or t["eta_due_at"] <= clock.now_iso()):
+        # Any number on an OPEN ticket counts, including one that replaces a promise
+        # still running. Refusing it silently is what turned a fitter revising "2" to
+        # "6" into a defaulter four hours later.
+        if t and t["status"] != "closed":
             return {"kind": "eta", "ticket_id": question["ticket_id"]}
         return None
     if kind == "reason_prompt" and question.get("incident_id"):
@@ -238,10 +240,9 @@ def _last_question_to(sender: str, channel: str) -> dict | None:
         if p.get("type") == "eta_request" and p.get("ticket_id"):
             t = db.query_one("SELECT status, eta_due_at FROM tickets WHERE id=?",
                              (p["ticket_id"],))
-            # Outstanding = ticket still open and either never answered or the previous
-            # estimate has already expired (a re-ask is on its way or arrived).
-            if t and t["status"] != "closed" and (
-                    not t["eta_due_at"] or t["eta_due_at"] <= clock.now_iso()):
+            # An open ticket can always take a number: a first estimate, or a revision
+            # of one that is still running.
+            if t and t["status"] != "closed":
                 return {"kind": "eta", "ticket_id": p["ticket_id"]}
         if p.get("type") == "reason_prompt" and p.get("incident_id"):
             if _incident_open_no_reason(p["incident_id"]):
@@ -366,6 +367,46 @@ def _say(channel: str, sender: str, text: str, raw_id: int | None) -> None:
         log.exception("could not queue an acknowledgement to %s", sender)
 
 
+def _handle_pass(cfg, channel: str, sender: str, question, asset_ref, raw_id):
+    """"Not me." Escalate now instead of waiting out the timer.
+
+    A person who cannot take a job had no way to say so: they could stay silent and be
+    chased, or answer dishonestly. Both are worse than telling the system to find
+    somebody else, which is what this does — it brings the next rung forward to now, so
+    the ladder moves on within one tick rather than after another 30 or 60 minutes.
+    """
+    ticket_id = incident_id = None
+    if question:
+        ticket_id = question.get("ticket_id")
+        incident_id = question.get("incident_id")
+    if not ticket_id and not incident_id and asset_ref:
+        incident_id = _find_incident(cfg, channel, sender, None, asset_ref)
+    if not ticket_id and not incident_id:
+        _say(channel, sender,
+             "Nothing is waiting on you right now — nothing to hand over.", raw_id)
+        return jsonify({"matched": False, "reason": "pass with nothing pending",
+                        "raw_id": raw_id}), 200
+
+    now = clock.now_iso()
+    where = "ticket_id=?" if ticket_id else "incident_id=?"
+    with db.transaction() as c:
+        n = c.execute(
+            f"UPDATE escalations SET due_at=? WHERE {where} AND status='pending'"
+            " AND due_at>?", (now, ticket_id or incident_id, now)).rowcount
+        events.log(c, "ticket" if ticket_id else "incident",
+                   ticket_id or incident_id, "passed",
+                   actor=_person_by_contact(cfg, channel, sender) or sender,
+                   detail={"brought_forward": n}, department=cfg.department, at=now)
+
+    aref = asset_ref or _asset_of(incident_id=incident_id, ticket_id=ticket_id)
+    label = (aref or "").replace("_", " ").title()
+    _say(channel, sender,
+         f"Passed on. {label} goes to the next person now." if label
+         else "Passed on. It goes to the next person now.", raw_id)
+    return jsonify({"matched": True, "kind": "pass", "ticket_id": ticket_id,
+                    "incident_id": incident_id, "raw_id": raw_id}), 200
+
+
 def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
             asset_ref: str | None, raw_id: int | None = None):
     cfg = current_app.config["OPS_CFG"]
@@ -382,6 +423,14 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
     # estimate is checked FIRST because it is the newer question by construction — it is
     # only ever sent after they have already answered the reason menu.
     stored_sender = normalise_msisdn(sender) if channel == "whatsapp" else sender
+
+    # "91 1" — the person naming which loom they are answering about. Two looms
+    # stopping within ten minutes is routine, and both questions then look identical on
+    # one screen; this is the only thing they can type that removes the doubt. It is
+    # stripped before parsing so the rest of the reply is just the answer.
+    named_asset, text = prompts.split_asset(cfg, text)
+    if named_asset:
+        asset_ref = named_asset
 
     # If the person used WhatsApp's reply-to, we know EXACTLY which question this
     # answers and no guessing is needed or wanted.
@@ -411,6 +460,16 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
         question = target
     else:
         question = _last_question_to(stored_sender, channel)
+
+    # A loom named in the reply beats every inference. If they wrote "92 1" while
+    # replying to loom 91's message, they mean 92.
+    if named_asset:
+        by_name = _find_incident(cfg, channel, sender, None, named_asset)
+        if by_name and (not question or question.get("incident_id") != by_name):
+            question = {"kind": "reason", "incident_id": by_name}
+
+    if prompts.is_pass(text):
+        return _handle_pass(cfg, channel, sender, question, asset_ref, raw_id)
 
     if question and question["kind"] == "eta":
         hours = prompts.parse_eta(text)

@@ -170,6 +170,11 @@ def set_eta(cfg: "config.Config", ticket_id: int, hours: int,
         ticket = c.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
         if ticket is None or ticket["status"] == "closed":
             return {"ok": False, "why": "ticket is closed"}
+        # A live estimate being replaced is a REVISION, not a fresh promise. A fitter
+        # who opens a machine, finds it worse than he thought and says so is doing
+        # exactly what the loop wants; silently discarding that and marking him a
+        # defaulter hours later punishes the honest one and rewards whoever says 24.
+        revised = bool(ticket["eta_due_at"]) and ticket["eta_due_at"] > (at or clock.now_iso())
         c.execute("UPDATE tickets SET eta_hours=?, eta_due_at=?, eta_by=? WHERE id=?",
                   (hours, due, actor, ticket_id))
         c.execute("UPDATE escalations SET status='cancelled'"
@@ -178,9 +183,10 @@ def set_eta(cfg: "config.Config", ticket_id: int, hours: int,
                      notify_role=ticket["owner_role"], action="eta_check",
                      due_at=due, trigger="eta")
         events.log(c, "ticket", ticket_id, models.K_ETA_SET, actor=actor,
-                   detail={"hours": hours, "due_at": due},
+                   detail={"hours": hours, "due_at": due, "revised": revised,
+                           "replaces_hours": ticket["eta_hours"] if revised else None},
                    department=cfg.department, at=at)
-    return {"ok": True, "hours": hours, "due_at": due}
+    return {"ok": True, "hours": hours, "due_at": due, "revised": revised}
 
 
 # --- cancellation ----------------------------------------------------------

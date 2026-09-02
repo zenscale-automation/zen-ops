@@ -46,9 +46,13 @@ def render(cfg: "config.Config", asset_ref: str, opened_at_iso: str,
     """The WhatsApp prompt text. Framed as help arriving, not a threat (doc 3.4)."""
     minutes = max(1, round((clock.now() - clock.parse(opened_at_iso)).total_seconds() / 60))
     label = asset_ref.replace("_", " ").title()
-    lines = [f"{label} has been stopped for {minutes} minutes.", "", "Reply with the reason:"]
+    number = asset_ref.split("_")[-1]
+    # The loom number goes in the reply instruction, not just the greeting: with two
+    # looms stopped, two of these sit on one screen and a bare "1" is a coin toss.
+    lines = [f"{label} has been stopped for {minutes} minutes.", "",
+             f"Reply with the loom number and the reason, e.g. {number} 1:"]
     for o in options(cfg):
-        lines.append(f"  {o['n']}  {o['label']}")
+        lines.append(f"  {number} {o['n']}  {o['label']}")
     # Computed by the caller from the ladder that will actually run — the single source
     # for every timing. None means no follow-up is scheduled, and the message says so by
     # promising nothing rather than inventing a number.
@@ -100,6 +104,40 @@ def parse(cfg: "config.Config", text: str) -> tuple[str, str | None] | None:
             return o["code"], None
     return None
 
+
+# --- saying WHICH loom you mean ---------------------------------------------------
+
+PASS_WORDS = ("pass", "not me", "notme", "someone else", "handover", "hand over")
+
+
+def split_asset(cfg: "config.Config", text: str) -> tuple[str | None, str]:
+    """Pull a leading loom number off a reply: "91 1" -> ("loom_91", "1").
+
+    Two looms stopping within ten minutes is routine in a weaving shed, and both
+    questions then sit on one screen looking identical. Naming the loom is the only
+    thing a person can type that removes the ambiguity, and everything they would
+    naturally reach for — "91 1", "loom 91 electrical" — used to parse as option 91 and
+    be discarded as unreadable.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None, t
+    parts = t.split()
+    first = parts[0].lower().strip(":.-")
+    if first in ("loom", "l") and len(parts) > 1:      # "loom 91 1"
+        parts = parts[1:]
+        first = parts[0].lower().strip(":.-")
+    if not first.isdigit() or len(parts) < 2:
+        return None, t
+    prefix = (cfg.source.get("settings", {}) or {}).get("asset_ref_prefix", "loom_")
+    return f"{prefix}{int(first)}", " ".join(parts[1:]).strip()
+
+
+def is_pass(text: str) -> bool:
+    """"Not my job." The one sentence a person most needs and could not say."""
+    return _norm(text) in tuple(_norm(w) for w in PASS_WORDS)
+
+
 # --- the fixer's time estimate ---------------------------------------------------
 
 ETA_MAX_HOURS = 24
@@ -130,6 +168,9 @@ def render_eta(cfg: "config.Config", asset_ref: str, reason_label: str,
         "How many hours will the fix take?",
         f"Reply with a number (1 = under an hour, up to {ETA_MAX_HOURS}).",
         "We will not chase you again until that time is up.",
+        "",
+        "Not your job? Reply PASS.",
+        "Need longer later? Send a new number any time.",
     ])
 
 
