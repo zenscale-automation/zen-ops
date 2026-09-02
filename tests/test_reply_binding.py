@@ -38,14 +38,17 @@ def _ask(cfg, asset_ref, provider_msg_id):
     ticker.tick(cfg)
     outbox.drain(cfg)
     row = db.query_one(
-        "SELECT id, payload FROM outbox WHERE channel='whatsapp' ORDER BY id DESC LIMIT 1")
+        "SELECT id, recipient, payload FROM outbox WHERE channel='whatsapp'"
+        " ORDER BY id DESC LIMIT 1")
     assert json.loads(row["payload"])["type"] == "reason_prompt"
     db.execute("UPDATE outbox SET provider_msg_id=? WHERE id=?",
                (provider_msg_id, row["id"]))
-    return inc["id"]
+    # The reply must come from whoever was actually asked — derived from the message,
+    # never a number pinned here that a routing change would quietly invalidate.
+    return inc["id"], row["recipient"].lstrip("+").replace(" ", "")
 
 
-def _reply(client, text, context_msg_id=None, sender="919216240003"):
+def _reply(client, text, sender, context_msg_id=None):
     body = {"number": sender, "message-in": text, "message_in_raw": text,
             "direction": 0, "unique-id": f"u{clock.now_iso()}{text}"}
     if context_msg_id:
@@ -62,10 +65,10 @@ def _reason_of(incident_id):
 def test_the_answer_lands_on_the_question_it_replied_to_not_the_newest(cfg, client):
     """Two looms stopped, two questions outstanding. The supervisor scrolls up and
     answers the FIRST one. Most-recent-wins would put that answer on the wrong loom."""
-    first = _ask(cfg, "loom_91", "msg-first")
-    second = _ask(cfg, "loom_92", "msg-second")
+    first, who = _ask(cfg, "loom_91", "msg-first")
+    second, _ = _ask(cfg, "loom_92", "msg-second")
 
-    out = _reply(client, "Electrical Fault", context_msg_id="msg-first")
+    out = _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
     assert out["matched"] is True and out["incident_id"] == first
 
     assert _reason_of(first) == "weaving.electrical"
@@ -73,11 +76,11 @@ def test_the_answer_lands_on_the_question_it_replied_to_not_the_newest(cfg, clie
 
 
 def test_a_second_answer_to_the_same_question_changes_nothing(cfg, client):
-    first = _ask(cfg, "loom_91", "msg-first")
-    _reply(client, "Electrical Fault", context_msg_id="msg-first")
+    first, who = _ask(cfg, "loom_91", "msg-first")
+    _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
     assert _reason_of(first) == "weaving.electrical"
 
-    out = _reply(client, "Machine Fault", context_msg_id="msg-first")
+    out = _reply(client, "Machine Fault", who, context_msg_id="msg-first")
     assert out["matched"] is False and out["reason"] == "already answered"
     assert _reason_of(first) == "weaving.electrical", "the first answer is the record"
     assert db.query_one("SELECT COUNT(*) n FROM incident_reasons WHERE incident_id=?",
@@ -87,11 +90,11 @@ def test_a_second_answer_to_the_same_question_changes_nothing(cfg, client):
 def test_a_duplicate_tap_does_not_leak_onto_another_incident(cfg, client):
     """The dangerous case. They answer loom 91, then a newer question arrives for loom
     92, then they tap the OLD button again — a stray tap must not answer loom 92."""
-    first = _ask(cfg, "loom_91", "msg-first")
-    _reply(client, "Electrical Fault", context_msg_id="msg-first")
-    second = _ask(cfg, "loom_92", "msg-second")
+    first, who = _ask(cfg, "loom_91", "msg-first")
+    _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
+    second, _ = _ask(cfg, "loom_92", "msg-second")
 
-    out = _reply(client, "Electrical Fault", context_msg_id="msg-first")
+    out = _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
     assert out["matched"] is False
     assert _reason_of(second) is None, \
         "a re-tap of an answered question must never become another loom's answer"
@@ -100,13 +103,13 @@ def test_a_duplicate_tap_does_not_leak_onto_another_incident(cfg, client):
 def test_a_reply_to_a_message_we_never_sent_falls_back_to_the_old_rule(cfg, client):
     # Unknown context (a forwarded message, a test push outside the outbox): we do not
     # recognise it, so behaviour is exactly what it was before — most recent question.
-    first = _ask(cfg, "loom_91", "msg-first")
-    out = _reply(client, "Electrical Fault", context_msg_id="msg-we-never-sent")
+    first, who = _ask(cfg, "loom_91", "msg-first")
+    out = _reply(client, "Electrical Fault", who, context_msg_id="msg-we-never-sent")
     assert out["matched"] is True and out["incident_id"] == first
 
 
 def test_a_reply_with_no_context_still_works(cfg, client):
     # Typing a bare answer instead of using reply-to is normal and must keep working.
-    first = _ask(cfg, "loom_91", "msg-first")
-    out = _reply(client, "Electrical Fault")
+    first, who = _ask(cfg, "loom_91", "msg-first")
+    out = _reply(client, "Electrical Fault", who)
     assert out["matched"] is True and out["incident_id"] == first
