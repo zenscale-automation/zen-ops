@@ -26,21 +26,25 @@ def client(cfg):
     return create_app(cfg=cfg, start_workers=False).test_client()
 
 
-def _ask(cfg, asset_ref, provider_msg_id):
+def _ask(cfg, asset_ref, provider_msg_id, minutes_ago=40):
     """Open an incident, let the ladder ask its reason question, and pin the provider id
     the way a real send does."""
     with db.transaction() as c:
         incidents.ensure_asset(c, cfg, asset_ref)
+    # Distinct stop times on purpose: two looms stopping within 5 seconds of each other
+    # IS a fleet stop, and the classifier correctly auto-codes it power_failure before
+    # anyone is asked anything. These tests are about two INDEPENDENT faults.
     inc = incidents.open_incident(cfg, asset_ref, "STOPPED",
-                                  at=clock.plus_seconds(-40 * 60))
+                                  at=clock.plus_seconds(-minutes_ago * 60))
     from app.core import classify
     classify.on_open(cfg, inc)
     ticker.tick(cfg)
     outbox.drain(cfg)
     row = db.query_one(
         "SELECT id, recipient, payload FROM outbox WHERE channel='whatsapp'"
-        " ORDER BY id DESC LIMIT 1")
+        " AND payload LIKE '%reason_prompt%' ORDER BY id DESC LIMIT 1")
     assert json.loads(row["payload"])["type"] == "reason_prompt"
+    assert json.loads(row["payload"])["incident_id"] == inc["id"]
     db.execute("UPDATE outbox SET provider_msg_id=? WHERE id=?",
                (provider_msg_id, row["id"]))
     # The reply must come from whoever was actually asked — derived from the message,
@@ -66,7 +70,7 @@ def test_the_answer_lands_on_the_question_it_replied_to_not_the_newest(cfg, clie
     """Two looms stopped, two questions outstanding. The supervisor scrolls up and
     answers the FIRST one. Most-recent-wins would put that answer on the wrong loom."""
     first, who = _ask(cfg, "loom_91", "msg-first")
-    second, _ = _ask(cfg, "loom_92", "msg-second")
+    second, _ = _ask(cfg, "loom_92", "msg-second", minutes_ago=35)
 
     out = _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
     assert out["matched"] is True and out["incident_id"] == first
@@ -92,7 +96,7 @@ def test_a_duplicate_tap_does_not_leak_onto_another_incident(cfg, client):
     92, then they tap the OLD button again — a stray tap must not answer loom 92."""
     first, who = _ask(cfg, "loom_91", "msg-first")
     _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
-    second, _ = _ask(cfg, "loom_92", "msg-second")
+    second, _ = _ask(cfg, "loom_92", "msg-second", minutes_ago=35)
 
     out = _reply(client, "Electrical Fault", who, context_msg_id="msg-first")
     assert out["matched"] is False

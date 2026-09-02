@@ -166,7 +166,12 @@ def test_a_pickyassist_number_reply_lands_as_an_estimate(cfg, monkeypatch):
 
     t = db.query_one("SELECT eta_hours, eta_by FROM tickets WHERE id=?", (tkt["id"],))
     assert t["eta_hours"] == 3
-    assert t["eta_by"] == "shailendra", "the promise carries the person's name"
+    # Whoever the estimate question actually went to — derived, so a roster change is
+    # not a test failure.
+    expected = next(pid for pid, person in cfg.people.items()
+                    if (person.get("whatsapp") or "").lstrip("+").replace(" ", "")
+                    == replier)
+    assert t["eta_by"] == expected, "the promise carries the person's name"
 
     pending = db.query(
         "SELECT action FROM escalations WHERE ticket_id=? AND status='pending'",
