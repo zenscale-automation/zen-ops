@@ -43,12 +43,21 @@ def _mark(delivery_status, kind=None):
     raise AssertionError(f"no {kind} message to mark")
 
 
-def _run(cfg, ticks=3):
+def _all_asks_failed():
+    """Sending is broken: every question we put out died. Marked after each tick,
+    because the ladder asks twice before it reminds and each ask must die in turn."""
+    db.execute("UPDATE outbox SET status='failed', delivery_status='failed'"
+               " WHERE channel='whatsapp'")
+
+
+def _run(cfg, ticks=3, failing=False):
     """Drive the ladder forward. The unknown ladder asks twice before it ever reminds,
     and each tick fires only what is due, so reaching the reminder rung takes several."""
     for _ in range(ticks):
         ticker.tick(cfg)
         outbox.drain(cfg)
+        if failing:
+            _all_asks_failed()
 
 
 def test_a_reminder_becomes_a_re_ask_when_the_question_never_arrived(cfg):
@@ -60,7 +69,7 @@ def test_a_reminder_becomes_a_re_ask_when_the_question_never_arrived(cfg):
 
     # Far enough on that the ladder has reached its reminder rung.
     clock.CLOCK.set_virtual(clock.now() + datetime.timedelta(hours=2))
-    _run(cfg)
+    _run(cfg, failing=True)
 
     kinds = [m["type"] for m in _messages()]
     assert kinds[-1] == "reason_prompt", \
@@ -135,6 +144,6 @@ def test_a_ticket_re_asks_for_the_estimate_rather_than_nagging(cfg):
     _mark("failed", kind="eta_request")
 
     clock.CLOCK.set_virtual(clock.now() + datetime.timedelta(hours=3))
-    _run(cfg)
+    _run(cfg, failing=True)
     assert _messages()[-1]["type"] == "eta_request", \
         "an unanswered-but-undelivered estimate question must be asked again"

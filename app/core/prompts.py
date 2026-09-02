@@ -122,14 +122,20 @@ def split_asset(cfg: "config.Config", text: str) -> tuple[str | None, str]:
     t = (text or "").strip()
     if not t:
         return None, t
+    # The word people say for a machine is the configured ref prefix without its
+    # separator, so this layer stays department-blind: a spinning hall calling them
+    # "frame_" accepts "frame 12 1" with no code change here.
+    prefix = (cfg.source.get("settings", {}) or {}).get("asset_ref_prefix", "")
+    if not prefix:
+        return None, t
+    spoken = prefix.rstrip("_-").lower()
     parts = t.split()
     first = parts[0].lower().strip(":.-")
-    if first in ("loom", "l") and len(parts) > 1:      # "loom 91 1"
+    if spoken and first == spoken and len(parts) > 1:
         parts = parts[1:]
         first = parts[0].lower().strip(":.-")
     if not first.isdigit() or len(parts) < 2:
         return None, t
-    prefix = (cfg.source.get("settings", {}) or {}).get("asset_ref_prefix", "loom_")
     return f"{prefix}{int(first)}", " ".join(parts[1:]).strip()
 
 
