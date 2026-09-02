@@ -1,7 +1,7 @@
 # Deploying ops-core to the AWS box (ap-south-1)
 
 Target: the same EC2 instance running zenscale-mcp. Storage: the empty `automation`
-database on the Zenscale MySQL server (15.207.31.57), with every table prefixed
+database on the automation MySQL server (13.232.186.226), with every table prefixed
 `opscore_` because that database will be shared with zenscale-mcp artifacts later.
 
 What was changed in this build for AWS: `PyMySQL` added to `requirements.txt` (it was
