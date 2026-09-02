@@ -145,6 +145,13 @@ class WhatsAppNotifier:
         no names — get the order wrong and the message reads plausibly and says something
         untrue, which is worse than failing.
         """
+        if payload.get("type") == "ack":
+            # An acknowledgement is only ever sent straight back at somebody who has
+            # just messaged us, so their 24-hour window is open by definition and free
+            # text always wins. Returning no template also stops it falling through to
+            # the escalation template below, which would answer "got it" with "please
+            # attend" and three variables that mean nothing here.
+            return "", [], []
         if payload.get("type") == "eta_request":
             # {{1}} asset, {{2}} reason. Falls back to the escalation template ("please
             # attend") when unapproved — degraded but delivered, and a numeric reply to

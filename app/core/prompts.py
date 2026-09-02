@@ -150,3 +150,54 @@ def parse_eta(text: str) -> int | None:
     if hours < 1:
         hours = 1              # "0.5" etc: under an hour is the floor, per the prompt
     return hours if hours <= ETA_MAX_HOURS else None
+
+
+# --- what the system says back ---------------------------------------------------
+#
+# Until now it said nothing. A person tapped a button, or typed a number, and got
+# silence — which is indistinguishable from the message never arriving, from the reply
+# being unparseable, and from the system being down. Someone who answers correctly and
+# is then chased anyway concludes it is not listening and stops answering, and every
+# number downstream is then measuring noise.
+#
+# These are free text, never templates: the person has just messaged us, so their
+# 24-hour service window is open by definition and no approval is needed.
+
+def ack_reason(asset_ref: str, reason_label: str, ticketed: bool) -> str:
+    label = asset_ref.replace("_", " ").title()
+    if ticketed:
+        return f"Got it. {label} — {reason_label}. Sent to the engineer."
+    return f"Got it. {label} — {reason_label}. Nothing more needed from you."
+
+
+def ack_eta(asset_ref: str, hours: int, due_at_iso: str, revised: bool = False) -> str:
+    label = asset_ref.replace("_", " ").title()
+    when = clock.format_ist(due_at_iso)
+    head = "Updated." if revised else "OK."
+    return (f"{head} {label} — {hours} hour{'s' if hours != 1 else ''}, until {when}. "
+            f"We will not chase you before then.")
+
+
+def ack_unparsed(cfg: "config.Config", text: str, asset_ref: str | None) -> str:
+    """The reply nobody could read. Repeating the menu costs one message and saves the
+    re-ask, the escalation, and the person's belief that answering does anything."""
+    said = (text or "").strip()
+    if len(said) > 30:
+        said = said[:30] + "…"
+    label = (asset_ref or "").replace("_", " ").title()
+    where = f"{label} — reply" if label else "Reply"
+    menu = "  ".join(f"{o['n']} {o['label']}" for o in options(cfg))
+    return "\n".join([f'Sorry, did not understand "{said}".', f"{where} with a number only:",
+                       menu])
+
+
+def ack_already_running(asset_ref: str) -> str:
+    label = asset_ref.replace("_", " ").title()
+    return f"{label} is running again — no answer needed. Thanks."
+
+
+def ack_already_answered(asset_ref: str, reason_label: str | None) -> str:
+    label = asset_ref.replace("_", " ").title()
+    if reason_label:
+        return f"Already recorded: {label} — {reason_label}."
+    return f"Already recorded for {label}."

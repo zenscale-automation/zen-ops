@@ -21,7 +21,7 @@ import os
 from flask import Blueprint, current_app, jsonify, request
 
 from .. import clock, db
-from ..core import escalation, incidents, prompts
+from ..core import escalation, incidents, outbox, prompts
 from ..notifiers.whatsapp import normalise_msisdn
 
 bp = Blueprint("webhooks", __name__)
@@ -314,6 +314,58 @@ def _record_raw(channel: str, body: str, sender: str = "") -> int:
     )
 
 
+def _incident_resolved(incident_id) -> bool:
+    if not incident_id:
+        return False
+    row = db.query_one("SELECT status FROM incidents WHERE id=?", (incident_id,))
+    return bool(row and row["status"] == "resolved")
+
+
+def _reason_label(cfg, asked: dict) -> str | None:
+    iid = asked.get("incident_id")
+    if not iid:
+        return None
+    row = db.query_one("SELECT code FROM incident_reasons WHERE incident_id=?"
+                       " ORDER BY id LIMIT 1", (iid,))
+    return cfg.label(row["code"]) if row else None
+
+
+def _asset_of(*, incident_id=None, ticket_id=None) -> str:
+    """The loom an answer was about, for saying it back to the person."""
+    if ticket_id and not incident_id:
+        row = db.query_one("SELECT incident_id FROM tickets WHERE id=?", (ticket_id,))
+        incident_id = row["incident_id"] if row else None
+    if not incident_id:
+        return ""
+    row = db.query_one("SELECT a.asset_ref FROM incidents i JOIN assets a ON a.id=i.asset_id"
+                       " WHERE i.id=?", (incident_id,))
+    return row["asset_ref"] if row else ""
+
+
+def _say(channel: str, sender: str, text: str, raw_id: int | None) -> None:
+    """Answer the person who just messaged us.
+
+    Every reply used to be met with silence, which reads exactly like the message never
+    arriving — so somebody who answers correctly and is then chased anyway concludes the
+    system is not listening and stops answering. One line back is what makes the whole
+    loop believable.
+
+    Keyed on the inbound row id, so a provider that redelivers the same reply does not
+    thank anybody twice.
+    """
+    if not text or raw_id is None:
+        return
+    address = sender
+    if channel == "whatsapp" and not address.startswith("+"):
+        address = "+" + address
+    try:
+        with db.transaction() as c:
+            outbox.enqueue(c, channel, address, {"type": "ack", "text": text},
+                           f"ack:{raw_id}")
+    except Exception:      # an acknowledgement must never break recording the answer
+        log.exception("could not queue an acknowledgement to %s", sender)
+
+
 def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
             asset_ref: str | None, raw_id: int | None = None):
     cfg = current_app.config["OPS_CFG"]
@@ -343,6 +395,17 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
             # on an old message and record it against an unrelated loom.
             log.info("reply from %s answers an already-answered question (%s) — ignored",
                      sender, asked.get("type"))
+            # Say so rather than going quiet: from the phone, an ignored answer and a
+            # lost answer look the same.
+            aref = _asset_of(incident_id=asked.get("incident_id"),
+                             ticket_id=asked.get("ticket_id"))
+            if aref:
+                if _incident_resolved(asked.get("incident_id")):
+                    _say(channel, sender, prompts.ack_already_running(aref), raw_id)
+                else:
+                    _say(channel, sender,
+                         prompts.ack_already_answered(aref, _reason_label(cfg, asked)),
+                         raw_id)
             return jsonify({"matched": False, "reason": "already answered",
                             "raw_id": raw_id}), 200
         question = target
@@ -357,6 +420,10 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
             if res.get("ok"):
                 db.execute("UPDATE inbound_raw SET matched_ticket_id=? WHERE id=?",
                            (question["ticket_id"], raw_id))
+                _say(channel, sender,
+                     prompts.ack_eta(_asset_of(ticket_id=question["ticket_id"]),
+                                     hours, res["due_at"],
+                                     revised=bool(res.get("revised"))), raw_id)
                 return jsonify({"matched": True, "kind": "eta",
                                 "ticket_id": question["ticket_id"],
                                 "hours": hours, "due_at": res["due_at"],
@@ -385,6 +452,14 @@ def _handle(channel: str, sender: str, text: str, context_msg_id: str | None,
         db.execute("UPDATE inbound_raw SET matched_incident_id=? WHERE id=?",
                    (incident_id, raw_id))
         result.update(matched=True, code=code, subcode=subcode, actor=actor)
+        _say(channel, sender,
+             prompts.ack_reason(_asset_of(incident_id=incident_id), cfg.label(code),
+                                bool(cfg.is_ticketable(code))), raw_id)
+    elif text and not parsed:
+        # The reply nobody could read. Repeating the menu costs one message and saves
+        # the re-ask, the escalation, and the person's belief that answering works.
+        _say(channel, sender,
+             prompts.ack_unparsed(cfg, text, _asset_of(incident_id=incident_id)), raw_id)
     return jsonify(result), 200
 
 
