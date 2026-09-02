@@ -218,10 +218,17 @@ def _last_question_to(sender: str, channel: str) -> dict | None:
     Most-recent-wins mirrors how the person experiences their own chat: the question at
     the bottom of the screen is the one they are answering.
     """
+    # Only QUESTIONS are candidates. Scanning the last N messages of any kind meant a
+    # live question aged out of the window as reminders piled on top of it: one ticket
+    # here accumulated 170 hourly reminders above an unanswered estimate question, so a
+    # perfectly good "6" matched nothing and the person kept being chased for the answer
+    # they had just given.
+    #
     # Same both-forms match as _find_incident strategy 3: the outbox stores the roster's
     # "+91..." form while providers report bare digits, and comparing them raw never hits.
     rows = db.query(
         "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
+        " AND (payload LIKE '%\"eta_request\"%' OR payload LIKE '%\"reason_prompt\"%')"
         " ORDER BY id DESC LIMIT 20",
         (sender, "+" + sender if channel == "whatsapp" else sender, channel),
     )
@@ -270,9 +277,12 @@ def _find_incident(cfg, channel: str, address: str, context_msg_id: str | None,
         )
         if row and _incident_open_no_reason(row["id"]):
             return row["id"]
-    # 3) most recent reason prompt sent to this sender, still unanswered
+    # 3) most recent reason prompt sent to this sender, still unanswered. Filtered to
+    # prompts for the same reason as _last_question_to: reminders must not push a live
+    # question out of the search window.
     rows = db.query(
         "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
+        " AND payload LIKE '%\"reason_prompt\"%'"
         " ORDER BY id DESC LIMIT 20",
         (address, "+" + address if channel == "whatsapp" else address, channel),
     )

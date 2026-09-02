@@ -117,3 +117,21 @@ def test_a_reply_with_no_context_still_works(cfg, client):
     first, who = _ask(cfg, "loom_91", "msg-first")
     out = _reply(client, "Electrical Fault", who)
     assert out["matched"] is True and out["incident_id"] == first
+
+
+def test_a_question_buried_under_reminders_can_still_be_answered(cfg, client):
+    """The live failure: an unanswered question with a hundred hourly reminders stacked
+    on top of it. Searching the last N messages of any kind loses it, so the person is
+    chased for an answer they have already given."""
+    first, who = _ask(cfg, "loom_91", "msg-first")
+
+    from app.core import outbox as outbox_mod
+    for i in range(40):                       # reminders pile up above the question
+        with db.transaction() as c:
+            outbox_mod.enqueue(c, "whatsapp", "+" + who,
+                               {"type": "escalation", "text": f"still down {i}"},
+                               f"noise:{i}")
+
+    out = _reply(client, "Electrical Fault", who)
+    assert out["matched"] is True and out["incident_id"] == first, \
+        "a question is answerable for as long as it is outstanding, not for 20 messages"
