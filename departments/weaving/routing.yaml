@@ -11,15 +11,22 @@ department: weaving
 # system look configured when it is not, and every downtime report drawn from it would
 # be attributed to nobody real. Add the rest as they are actually confirmed.
 roles:
+  # The pilot runs through 'developer': every fault question and reminder goes to
+  # Akshaan while the loop is being proved on real machines. 'engineering' is the
+  # shape the plant will use once it is handed over — it stays defined, and nothing
+  # routes to it yet, so Shailendra is not paged by a system still under test.
+  developer:
+    all: [akshaan]
   engineering:
     all: [shailendra]
 
 # Everything a role cannot resolve falls back to this person. With one team and one
 # person it is the same human either way, which is the point: there is no path through
 # this config that reaches nobody.
-default_owner: shailendra
+default_owner: akshaan
 
 people:
+  akshaan:    { name: Akshaan,    whatsapp: "+919216240003" }
   shailendra: { name: Shailendra, whatsapp: "+918696099222" }
 
 # The shift block does double duty: it resolves who is on duty at 03:00, and it is what

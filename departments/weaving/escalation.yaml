@@ -46,9 +46,9 @@ ladders:
   # 20 minutes is the pilot setting. Raise it as looms come online and watch what
   # actually gets answered.
   unknown:
-    - { after_minutes: 20, notify: engineering, action: ask_reason }
-    - { after_minutes: 45, notify: engineering, action: ask_reason }
-    - { after_minutes: 90, notify: engineering, repeat_every_minutes: 60 }
+    - { after_minutes: 20, notify: developer, action: ask_reason }
+    - { after_minutes: 45, notify: developer, action: ask_reason }
+    - { after_minutes: 90, notify: developer, repeat_every_minutes: 60 }
 
 recurrence:
   window_hours: 8
