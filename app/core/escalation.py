@@ -14,6 +14,7 @@ next rung, queue the next notification".
 
 from __future__ import annotations
 
+import json
 import logging
 
 from .. import clock, config, db
@@ -202,6 +203,47 @@ def cancel_for_ticket(c, ticket_id: int) -> None:
 
 # --- firing ----------------------------------------------------------------
 
+# A question is only a question once it reaches a phone. PickyAssist answers 100 the
+# moment a message is QUEUED and Meta's verdict lands seconds later, so "we sent it" and
+# "they got it" are different facts — and the delivery-report webhook is what tells them
+# apart.
+_ASKS = ("reason_prompt", "eta_request")
+
+
+def _has_reason(c, incident_id: int) -> bool:
+    row = c.execute("SELECT COUNT(*) n FROM incident_reasons WHERE incident_id=?",
+                    (incident_id,)).fetchone()
+    return bool(row and row["n"])
+
+
+def _ask_reached_anyone(c, esc_row, grace_minutes: float = 15) -> bool:
+    """Did any question about this incident/ticket actually arrive?
+
+    A message with no delivery report at all, sent long enough ago that one would have
+    come, counts as arrived: reports can stop for reasons of their own, and holding the
+    loop open on a missing receipt would chase nobody forever.
+    """
+    tag = (f"tkt:{esc_row['ticket_id']}:" if esc_row["ticket_id"]
+           else f"inc:{esc_row['incident_id']}:")
+    rows = c.execute(
+        "SELECT status, delivery_status, sent_at, payload FROM outbox"
+        " WHERE dedupe_key LIKE ?", (tag + "%",)).fetchall()
+    cutoff = clock.plus_seconds(-60 * grace_minutes)
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) or {}
+        except (TypeError, ValueError):
+            continue
+        if payload.get("type") not in _ASKS:
+            continue
+        if r["delivery_status"] in ("delivered", "read"):
+            return True
+        if (r["status"] == "sent" and r["delivery_status"] is None
+                and r["sent_at"] and r["sent_at"] <= cutoff):
+            return True
+    return False
+
+
 def fire(c, cfg: "config.Config", esc_row) -> None:
     """Act on one due escalation: queue its notification(s), mark it fired, and write
     the next rung. Runs inside the ticker's transaction."""
@@ -237,6 +279,26 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
                                  owner_role=owner_role)
     action = esc_row["action"]
+
+    # Never chase somebody about a question they never received.
+    #
+    # The later rungs of a ladder are reminders: "still down, no reason given", "please
+    # step in". Every one of them assumes the first rung's question arrived. When it did
+    # not — the send failed, or Meta dropped it — those reminders read as an accusation
+    # about a message the person has never seen, and no amount of chasing can produce an
+    # answer to a question nobody was asked. Ask again instead, at whatever rung the
+    # ladder has reached.
+    if not action and not _ask_reached_anyone(c, esc_row):
+        if is_ticket:
+            action = "ask_eta"
+        elif not _has_reason(c, incident["id"]):
+            action = "ask_reason"
+        if action:
+            log.warning(
+                "%s %s: no question has reached anyone yet — asking again instead of "
+                "sending a reminder about an answer that was never requested",
+                "ticket" if is_ticket else "incident",
+                esc_row["ticket_id"] or esc_row["incident_id"])
 
     # An expired estimate. The machine is still stopped (the resumed check above already
     # returned), so the promise was missed: count it — this row is the defaulter metric —
@@ -352,6 +414,11 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
         # generation has to be.
         if esc_row.get("trigger") == "repeat":
             gen += f":rep{esc_row['id']}"
+        if action and not esc_row["action"]:
+            # This rung was a reminder and became a re-ask, so it must carry its own key
+            # — the reminder's key may already exist and INSERT IGNORE would drop the
+            # question silently, which is the exact failure this branch exists to fix.
+            gen += ":reask"
         dedupe = f"{entity_tag}:rung:{esc_row['rung']}{gen}:{rcpt.person_id}"
         outbox.enqueue(c, rcpt.channel, rcpt.address, payload, dedupe, at=now)
 
