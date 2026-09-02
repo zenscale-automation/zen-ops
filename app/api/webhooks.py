@@ -228,9 +228,10 @@ def _last_question_to(sender: str, channel: str) -> dict | None:
     # "+91..." form while providers report bare digits, and comparing them raw never hits.
     rows = db.query(
         "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
-        " AND (payload LIKE '%\"eta_request\"%' OR payload LIKE '%\"reason_prompt\"%')"
+        " AND (payload LIKE ? OR payload LIKE ?)"
         " ORDER BY id DESC LIMIT 20",
-        (sender, "+" + sender if channel == "whatsapp" else sender, channel),
+        (sender, "+" + sender if channel == "whatsapp" else sender, channel,
+         '%"eta_request"%', '%"reason_prompt"%'),
     )
     for r in rows:
         p = json.loads(r["payload"]) or {}
@@ -282,9 +283,10 @@ def _find_incident(cfg, channel: str, address: str, context_msg_id: str | None,
     # question out of the search window.
     rows = db.query(
         "SELECT payload FROM outbox WHERE (recipient=? OR recipient=?) AND channel=?"
-        " AND payload LIKE '%\"reason_prompt\"%'"
+        " AND payload LIKE ?"
         " ORDER BY id DESC LIMIT 20",
-        (address, "+" + address if channel == "whatsapp" else address, channel),
+        (address, "+" + address if channel == "whatsapp" else address, channel,
+         '%"reason_prompt"%'),
     )
     for r in rows:
         p = json.loads(r["payload"]) or {}
