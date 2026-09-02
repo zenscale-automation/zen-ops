@@ -104,15 +104,18 @@ def test_a_ticket_reminder_counts_minutes_from_the_stop_not_the_ticket(cfg):
     """The ticket opens when the supervisor answers, 20+ minutes after the loom stopped.
     Measuring the sentence from the ticket told people a loom down 47 minutes had been
     down 25 — and the earlier prompt had already said 20."""
-    inc, tkt = _ticketed(cfg, minutes_ago=40)
-    _run(cfg, ticks=1)
+    inc, tkt = _ticketed(cfg, minutes_ago=40)      # the loom stopped 40 min ago
+    _run(cfg, ticks=1)                             # the ticket opens NOW and asks
     escalation.set_eta(cfg, tkt["id"], 1, actor="akshaan")
 
     clock.CLOCK.set_virtual(clock.now() + datetime.timedelta(hours=1, minutes=1))
-    _run(cfg, ticks=2)
+    _run(cfg, ticks=1)                             # the estimate lapses, it re-asks
+    clock.CLOCK.set_virtual(clock.now() + datetime.timedelta(minutes=40))
+    _run(cfg, ticks=2)                             # now the reminder rung comes due
 
     msg = [m for m in _sent() if m["type"] == "escalation"]
     assert msg, "a reminder should have gone out"
     down = msg[-1]["minutes_down"]
-    assert down >= 100, \
-        f"the loom has been down about 101 min; the message says {down}"
+    # 40 before the ticket existed + 61 of the estimate + 40 more.
+    assert down >= 135, \
+        f"the loom has been down about 141 min; the message says {down}"
