@@ -1107,7 +1107,7 @@ def list_assets():
     cfg = _cfg()
     live = offplan.active_map()
     rows = db.query(
-        "SELECT a.id, a.asset_ref, a.active,"
+        "SELECT a.id, a.asset_ref, a.active, a.decommissioned_at,"
         " (SELECT COUNT(*) FROM incidents i WHERE i.asset_id=a.id"
         "   AND i.status IN ('open','resolving')) open_incidents"
         " FROM assets a WHERE a.department=? ORDER BY a.asset_ref",
@@ -1119,6 +1119,7 @@ def list_assets():
         out.append({
             "asset_ref": r["asset_ref"],
             "in_service": bool(r["active"]),
+            "decommissioned": bool(r["decommissioned_at"]),
             "stopped_now": bool(r["open_incidents"]),
             "off_plan": None if not off else {
                 "reason": off["reason"], "note": off["note"],
@@ -1550,7 +1551,10 @@ def decommission_asset(asset_ref: str):
     actor = _actor()
     closed = 0
     with db.transaction() as c:
-        c.execute("UPDATE assets SET active=0 WHERE id=?", (aid,))
+        # The timestamp is what makes it stick: active=0 alone is undone by the machine
+        # simply reporting, which a retired loom on a live network keeps doing.
+        c.execute("UPDATE assets SET active=0, decommissioned_at=? WHERE id=?",
+                  (now, aid))
         rows = c.execute("SELECT id FROM incidents WHERE asset_id=?"
                          " AND status IN ('open','resolving')", (aid,)).fetchall()
         for r in rows:
@@ -1574,6 +1578,36 @@ def decommission_asset(asset_ref: str):
                    department=cfg.department, at=now)
     return jsonify({"ok": True, "asset_ref": asset_ref, "in_service": False,
                     "incidents_closed": closed}), 200
+
+
+@bp.delete("/api/admin/assets/<asset_ref>/decommission")
+def recommission_asset(asset_ref: str):
+    """Put a retired machine back in service.
+
+    Permanent means the feed cannot undo it, not that a person cannot. Somebody retiring
+    the wrong loom at the end of a shift should not need a database session to fix it.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    from ..core import incidents as inc_mod
+
+    cfg = _cfg()
+    try:
+        aid = inc_mod.asset_id_for(cfg, asset_ref)
+    except Exception:
+        return _err(404, "no such asset", asset_ref=asset_ref)
+    now = clock.now_iso()
+    with db.transaction() as c:
+        n = c.execute("UPDATE assets SET active=1, decommissioned_at=NULL"
+                      " WHERE id=? AND decommissioned_at IS NOT NULL", (aid,)).rowcount
+        if n:
+            events.log(c, "asset", 0, "recommissioned", actor=_actor(),
+                       detail={"asset_ref": asset_ref}, department=cfg.department, at=now)
+    if not n:
+        return _err(409, "that machine is not decommissioned", asset_ref=asset_ref)
+    return jsonify({"ok": True, "asset_ref": asset_ref, "in_service": True,
+                    "note": "the next poll will pick it up again"}), 200
 
 
 @bp.get("/api/admin/report")

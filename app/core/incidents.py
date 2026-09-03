@@ -30,8 +30,20 @@ def ensure_asset(c, cfg: "config.Config", asset_ref: str, label: str | None = No
         (aid, cfg.department, asset_ref, label),
     )
     if cur.rowcount == 0:                       # row existed — make sure it is live
-        c.execute("UPDATE assets SET active=1 WHERE id=? AND active=0", (aid,))
+        # …unless a human retired it. A decommissioned machine is often still powered
+        # and still on the network — that is precisely the case this guard exists for,
+        # because without it "permanently" lasted until the next poll.
+        c.execute("UPDATE assets SET active=1 WHERE id=? AND active=0"
+                  " AND decommissioned_at IS NULL", (aid,))
     return aid
+
+
+def decommissioned_ids(c=None) -> set:
+    """Machines a human has retired. They may still be reporting; that is not a signal."""
+    q = (c.execute("SELECT id FROM assets WHERE decommissioned_at IS NOT NULL").fetchall()
+         if c is not None
+         else db.query("SELECT id FROM assets WHERE decommissioned_at IS NOT NULL"))
+    return {r["id"] for r in q}
 
 
 def open_incident(cfg: "config.Config", asset_ref: str, condition: str,

@@ -38,13 +38,20 @@ def apply_events(cfg: "config.Config", events: list) -> dict:
     independent of processing order.
     """
     new_incidents: list[dict] = []
-    resolved = skipped_offplan = 0
+    resolved = skipped_offplan = skipped_retired = 0
     # One query for the whole batch rather than one per asset — the poller runs this
     # every cycle for every loom.
     offplan = offplan_mod.active_map()
+    retired = incidents.decommissioned_ids()
     for ev in events:
         if isinstance(ev, IncidentOpened):
             aid = incidents.asset_id_for(cfg, ev.asset_ref)
+            if aid in retired:
+                # Retired for good. It may still be powered and still sending rows —
+                # a decommissioned machine usually is — but nothing about it is a fault
+                # any more, so no incident and nobody told.
+                skipped_retired += 1
+                continue
             if aid in offplan:
                 # Deliberately not in production. Opening an incident here is how the
                 # system earns a reputation for crying wolf: a prompt, a re-prompt and an
@@ -71,7 +78,8 @@ def apply_events(cfg: "config.Config", events: list) -> dict:
     for inc in new_incidents:
         classify.on_open(cfg, inc)
 
-    return {"opened": len(new_incidents), "resolved": resolved, "skipped_offplan": skipped_offplan}
+    return {"opened": len(new_incidents), "resolved": resolved,
+            "skipped_offplan": skipped_offplan, "skipped_retired": skipped_retired}
 
 
 def poll_once(cfg: "config.Config", source) -> dict:

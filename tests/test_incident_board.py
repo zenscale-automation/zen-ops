@@ -219,3 +219,47 @@ def test_the_board_needs_the_key_like_every_other_read(cfg, monkeypatch):
     _stopped(cfg, "loom_91", 40)
     assert client.get("/api/admin/incidents").status_code == 403
     assert client.post("/api/admin/incidents/1/remind").status_code == 403
+
+
+def test_a_decommissioned_machine_is_not_resurrected_by_the_feed(cfg, monkeypatch):
+    """The case that made 'permanently' a lie: a retired loom is usually still powered
+    and still sending rows, and reporting used to count as proof it was back."""
+    client = _client(cfg, monkeypatch)
+    _stopped(cfg, "loom_91", 40)
+    client.post("/api/admin/assets/loom_91/decommission", headers=_h(),
+                json={"confirm": True})
+
+    with db.transaction() as c:                      # the feed reports it again
+        incidents.ensure_asset(c, cfg, "loom_91")
+    row = db.query_one("SELECT active, decommissioned_at FROM assets"
+                       " WHERE asset_ref='loom_91'")
+    assert row["active"] == 0 and row["decommissioned_at"]
+
+
+def test_a_retired_machine_stopping_again_raises_nothing(cfg, monkeypatch):
+    client = _client(cfg, monkeypatch)
+    _stopped(cfg, "loom_91", 40)
+    client.post("/api/admin/assets/loom_91/decommission", headers=_h(),
+                json={"confirm": True})
+
+    from app.core import poller
+    from app.sources.base import IncidentOpened
+    out = poller.apply_events(cfg, [IncidentOpened(
+        asset_ref="loom_91", at=clock.now_iso(), condition="STOPPED", context={})])
+    assert out["opened"] == 0 and out["skipped_retired"] == 1
+    assert _board(client) == []
+
+
+def test_a_machine_retired_by_mistake_can_be_put_back(cfg, monkeypatch):
+    client = _client(cfg, monkeypatch)
+    _stopped(cfg, "loom_91", 40)
+    client.post("/api/admin/assets/loom_91/decommission", headers=_h(),
+                json={"confirm": True})
+
+    r = client.delete("/api/admin/assets/loom_91/decommission", headers=_h())
+    assert r.status_code == 200
+    row = db.query_one("SELECT active, decommissioned_at FROM assets"
+                       " WHERE asset_ref='loom_91'")
+    assert row["active"] == 1 and row["decommissioned_at"] is None
+    assert client.delete("/api/admin/assets/loom_91/decommission",
+                         headers=_h()).status_code == 409
