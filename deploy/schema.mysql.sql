@@ -277,6 +277,23 @@ CREATE TABLE IF NOT EXISTS opscore_alert_state (
   PRIMARY KEY (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ===== 008_incident_assignment.sql =====
+-- Assigning one fault to one person, without rewriting the roster.
+--
+-- Routing is role-based on purpose: a role survives somebody leaving, and a 3am fault
+-- reaches whoever is actually on nights. But a live incident sometimes needs to go to a
+-- named person for reasons no roster can express -- he is already standing at that loom,
+-- or the person on shift has just said it is not his job. Until now the only way to do
+-- that was to edit the roster for everything, so nobody did it, and the fault sat with
+-- whoever the rota named.
+--
+-- A person named here overrides the role for that escalation only. NULL means "use the
+-- role", which is every row written by the ladders themselves.
+
+ALTER TABLE opscore_escalations ADD COLUMN notify_person VARCHAR(64) NULL;
+
+ALTER TABLE opscore_tickets ADD COLUMN owner_person VARCHAR(64) NULL;
+
 -- ===== bookkeeping =====
 CREATE TABLE IF NOT EXISTS opscore_schema_migrations (
   name VARCHAR(191) NOT NULL,
@@ -298,3 +315,5 @@ INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('006_delivery_status.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
 INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
   VALUES ('007_alert_state.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
+INSERT IGNORE INTO opscore_schema_migrations(name, applied_at)
+  VALUES ('008_incident_assignment.sql', DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%S+00:00'));
