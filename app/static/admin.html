@@ -181,6 +181,25 @@
   body.busy{cursor:progress}
   body.busy button,body.busy select,body.busy input{opacity:.6}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* ---- open incidents board ---- */
+  .inc{border:1px solid var(--line);border-radius:9px;margin:9px 0;background:var(--card)}
+  .inc>summary{list-style:none;cursor:pointer;padding:12px 14px;display:flex;
+    gap:12px;align-items:baseline;flex-wrap:wrap}
+  .inc>summary::-webkit-details-marker{display:none}
+  .inc .who{font-weight:650;font-size:15px}
+  .inc .down{font-variant-numeric:tabular-nums;color:var(--text-2)}
+  .inc .grow{flex:1}
+  .inc .tags{display:flex;gap:6px;flex-wrap:wrap}
+  .inc .body{padding:0 14px 14px;border-top:1px solid var(--line);margin-top:2px}
+  .inc .acts{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
+  .tl{margin:12px 0 0;border-left:2px solid var(--line);padding-left:12px}
+  .tl .e{display:flex;gap:9px;font-size:13px;padding:3px 0;align-items:baseline}
+  .tl .t{font-variant-numeric:tabular-nums;color:var(--text-2);min-width:112px}
+  .tl .k{min-width:74px;color:var(--text-2)}
+  .tl .bad{color:var(--bad)}
+  .tl .good{color:var(--good)}
+  .inc .qa{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
 </style>
 </head>
 <body>
@@ -204,6 +223,7 @@
 
       <nav class="tabs" id="tabs" aria-label="Sections">
         <a href="#overview">Overview</a>
+        <a href="#incidents">Open incidents</a>
         <a href="#people">People &amp; teams</a>
         <a href="#escalation">Escalation &amp; timing</a>
         <a href="#faults">Fault types</a>
@@ -219,6 +239,19 @@
         <div id="nextSteps"></div>
       </section>
 
+      </div>
+
+      <div class="page" data-page="incidents">
+      <section>
+        <h2>Stopped right now</h2>
+        <p class="hint">Longest first — the one at the top is the one nobody has dealt
+          with. Open a row to see every question asked and every answer given.</p>
+        <div class="row" style="margin:10px 0">
+          <button id="incRefresh">Refresh</button>
+          <span class="muted" id="incStamp"></span>
+        </div>
+        <div id="incList"></div>
+      </section>
       </div>
 
       <div class="page" data-page="people">
@@ -492,6 +525,7 @@ async function load() {
   loadDetection();
   loadFeed();
   showTab();
+  if ((location.hash || "") === "#incidents") loadIncidents();
 }
 
 function showLocked(why) {
@@ -1359,6 +1393,219 @@ async function loadSettings() {
 /* ------------------------------------------------------------------- wiring */
 
 /* tabs — hash-routed so a page can be linked and reload lands where you were */
+/* ------------------------------------------------- open incidents (live board) */
+
+var INC = null;
+
+async function loadIncidents() {
+  var r = await api("GET", "/api/admin/incidents");
+  if (!r.ok) { banner("bad", r.payload.error || "could not load open incidents"); return; }
+  INC = r.payload;
+  renderIncidents();
+}
+
+function fmtWhen(iso) {
+  if (!iso) return "";
+  var d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString([], { day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit" });
+}
+
+function hhmm(mins) {
+  var h = Math.floor(mins / 60), m = mins % 60;
+  return h ? h + "h " + m + "m" : m + "m";
+}
+
+function renderIncidents() {
+  var box = $("#incList");
+  box.innerHTML = "";
+  if (!INC) return;
+  $("#incStamp").textContent = "as of " + fmtWhen(INC.now);
+  if (!INC.incidents.length) {
+    box.append(el("p", "empty", "Nothing is stopped. Every machine is running."));
+    return;
+  }
+  INC.incidents.slice().reverse().forEach(function (i) { box.append(incRow(i)); });
+}
+
+function incRow(i) {
+  var d = el("details", "inc");
+  d.dataset.incident = i.incident_id;
+  var sm = el("summary");
+  sm.append(el("span", "who", label(i.asset_ref)));
+  sm.append(el("span", "down", hhmm(i.minutes_down) + " down"));
+
+  var tags = el("span", "tags");
+  if (i.reason) {
+    tags.append(pill(i.reason.label, i.reason.ticketable ? "" : "good"));
+  } else {
+    tags.append(pill("no reason given", "warn"));
+  }
+  if (i.promise) {
+    tags.append(pill(i.promise.hours + "h by " + (i.promise.by_name || i.promise.by)
+      + (i.promise.overdue ? " — OVERDUE" : ""), i.promise.overdue ? "warn" : "good"));
+  }
+  if (i.promise && i.promise.misses) {
+    tags.append(pill(i.promise.misses + " missed", "warn"));
+  }
+  if (i.recurrence && i.recurrence.repeating) {
+    tags.append(pill(i.recurrence.count + "x in " + i.recurrence.window_hours + "h",
+      "warn"));
+  }
+  if (i.state === "OFFLINE") tags.append(pill("no data from the machine", "warn"));
+  if (!i.in_service) tags.append(pill("out of service", ""));
+  sm.append(tags, el("span", "grow"));
+
+  var owner = (i.owner || []).map(function (o) { return o.name; }).join(", ");
+  sm.append(el("span", "muted", owner ? "with " + owner : "nobody assigned"));
+  d.append(sm);
+
+  var body = el("div", "body");
+  var next = i.next_step
+    ? "Next: " + i.next_step.action.replace(/_/g, " ") + " at " + fmtWhen(i.next_step.due_at)
+    : "Nothing further is scheduled.";
+  body.append(el("p", "hint", next));
+
+  // give the reason somebody told you out loud
+  if (!i.reason) {
+    var qa = el("div", "qa");
+    var sel = el("select");
+    sel.append(new Option("Record the reason someone gave you…", ""));
+    (STATE.reasons || []).forEach(function (c) {
+      sel.append(new Option(c.label || c.code, c.code));
+    });
+    var go = el("button", "", "Record");
+    go.onclick = async function () {
+      if (!sel.value) return;
+      var r = await api("POST", "/api/admin/incidents/" + i.incident_id + "/reason",
+                        { code: sel.value });
+      if (!r.ok) return banner("bad", r.payload.error || "could not record that reason");
+      loadIncidents();
+    };
+    qa.append(sel, go);
+    body.append(qa);
+  }
+
+  // hand it to a named person
+  var aq = el("div", "qa");
+  var who = el("select");
+  who.append(new Option("Assign to…", ""));
+  (STATE.people || []).forEach(function (p) {
+    var o = new Option(p.name, p.id);
+    if (i.ticket && i.ticket.assigned_person === p.id) o.selected = true;
+    who.append(o);
+  });
+  var assign = el("button", "", "Assign");
+  assign.onclick = async function () {
+    var r = await api("POST", "/api/admin/incidents/" + i.incident_id + "/assign",
+                      { person: who.value });
+    if (!r.ok) return banner("bad", r.payload.error || "could not assign that");
+    loadIncidents();
+  };
+  aq.append(who, assign);
+  body.append(aq);
+
+  // the three actions
+  var acts = el("div", "acts");
+
+  var remind = el("button", "", "Send the next message now");
+  remind.onclick = async function () {
+    var r = await api("POST", "/api/admin/incidents/" + i.incident_id + "/remind");
+    if (!r.ok) return banner("bad", r.payload.error || "nothing to bring forward");
+    banner("good", "Going out within 30 seconds.");
+    loadIncidents();
+  };
+
+  var off = el("button", "", "Out of commission until…");
+  off.onclick = function () { offPlanDialog(i); };
+
+  var dec = el("button", "danger", "Decommission permanently");
+  dec.onclick = async function () {
+    if (!confirm("Retire " + label(i.asset_ref) + " for good?\n\nIt stops being "
+      + "monitored, asked about, and counted in the fleet. Use \u201cout of "
+      + "commission\u201d instead for a machine that is coming back.")) return;
+    var r = await api("POST", "/api/admin/assets/" + i.asset_ref + "/decommission",
+                      { confirm: true });
+    if (!r.ok) return banner("bad", r.payload.error || "could not decommission that");
+    loadIncidents();
+  };
+  acts.append(remind, off, dec);
+  body.append(acts);
+
+  // the conversation, only when asked for
+  var tl = el("div", "tl");
+  tl.append(el("p", "muted", "Loading the conversation…"));
+  body.append(tl);
+  d.addEventListener("toggle", function () {
+    if (d.open && !d.dataset.loaded) {
+      d.dataset.loaded = "1";
+      loadTimeline(i.incident_id, tl);
+    }
+  });
+
+  d.append(body);
+  return d;
+}
+
+async function loadTimeline(id, into) {
+  var r = await api("GET", "/api/admin/incidents/" + id + "/timeline");
+  into.innerHTML = "";
+  if (!r.ok) { into.append(el("p", "muted", "Could not load the conversation.")); return; }
+  var entries = r.payload.entries || [];
+  if (!entries.length) { into.append(el("p", "muted", "Nothing has happened yet.")); return; }
+  entries.forEach(function (e) {
+    var row = el("div", "e");
+    row.append(el("span", "t", fmtWhen(e.at)));
+    if (e.kind === "sent") {
+      row.append(el("span", "k", "asked"));
+      var txt = (e.text || e.what || "").split("\n")[0];
+      row.append(el("span", "grow", txt));
+      var cls = e.delivery === "failed" ? "bad"
+        : (e.delivery === "delivered" || e.delivery === "read") ? "good" : "";
+      row.append(el("span", cls, e.delivery === "failed"
+        ? "never arrived" : e.delivery));
+    } else if (e.kind === "reply") {
+      row.append(el("span", "k", "replied"));
+      row.append(el("span", "grow", "\u201c" + (e.text || "") + "\u201d"));
+    } else {
+      row.append(el("span", "k", "system"));
+      row.append(el("span", "grow", (e.what || "").replace(/_/g, " ")));
+    }
+    into.append(row);
+  });
+}
+
+function offPlanDialog(i) {
+  var hours = prompt("Out of commission for how many hours?\n\nIt stops being asked "
+    + "about until then, and comes back on its own — no end date is not allowed, "
+    + "because a machine parked forever hides a real fault.", "8");
+  if (!hours) return;
+  var n = parseFloat(hours);
+  if (!(n > 0)) return banner("bad", "That is not a number of hours.");
+  var reason = prompt("Why? One of: " + (INC.offplan_reasons || []).join(", "),
+                      "maintenance");
+  if (!reason) return;
+  var until = new Date(Date.now() + n * 3600 * 1000).toISOString().replace(/\.\d+Z$/, "+00:00");
+  api("PUT", "/api/admin/assets/" + i.asset_ref + "/offplan",
+      { reason: reason.trim(), until: until }).then(function (r) {
+    if (!r.ok) return banner("bad", r.payload.error || "could not set that");
+    banner("good", label(i.asset_ref) + " is out of commission until " + fmtWhen(until));
+    loadIncidents();
+  });
+}
+
+function pill(text, kind) {
+  var p = el("span", "pill" + (kind ? " " + kind : ""));
+  p.textContent = text;
+  return p;
+}
+
+function label(ref) {
+  return String(ref || "").replace(/_/g, " ").replace(/\b\w/g, function (m) {
+    return m.toUpperCase();
+  });
+}
+
 function showTab() {
   var want = (location.hash || "#overview").slice(1);
   var known = {};
@@ -1373,7 +1620,10 @@ function showTab() {
     a.classList.toggle("on", a.getAttribute("href") === "#" + want);
   });
 }
-window.addEventListener("hashchange", showTab);
+window.addEventListener("hashchange", function () {
+  showTab();
+  if ((location.hash || "") === "#incidents") loadIncidents();
+});
 
 var keyTimer = null;
 $("#key").oninput = function () {
@@ -1396,6 +1646,8 @@ $("#savePlan").onclick = async function () {
   handle(await api("PUT", "/api/admin/plans/" + $("#planSel").value, { steps: planDraft }),
     "Saved");
 };
+$("#incRefresh").onclick = loadIncidents;
+
 $("#addTeam").onclick = async function () {
   var name = $("#newTeam").value.trim();
   if (!name) return;
