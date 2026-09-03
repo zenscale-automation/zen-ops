@@ -46,7 +46,7 @@ import re
 from flask import Blueprint, current_app, jsonify, request
 
 from .. import clock, config, db
-from ..core import events
+from ..core import events, routing
 from .config_api import _actor, _authorised
 
 bp = Blueprint("admin_api", __name__)
@@ -1214,6 +1214,368 @@ def clear_offplan(asset_ref: str):
 
 
 # --------------------------------------------------------------------------- report
+
+# --- open incidents: the live board -----------------------------------------------
+
+@bp.get("/api/admin/incidents")
+def list_open_incidents():
+    """Everything currently stopped, with enough context to act on it.
+
+    The floor's own question, in the floor's own order: what is down, for how long, does
+    anybody know why, who is on the hook, and did they promise a time. Sorted longest
+    down first, because that is the one nobody has dealt with.
+    """
+    denied = _read_guard()
+    if denied:
+        return denied
+    from ..core import offplan
+
+    cfg = _cfg()
+    now = clock.now_iso()
+    rows = db.query(
+        "SELECT i.id, i.asset_id, i.state, i.status, i.opened_at, i.shift,"
+        " i.reopen_count, a.asset_ref, a.active,"
+        " (SELECT ir.code FROM incident_reasons ir WHERE ir.incident_id=i.id"
+        "   ORDER BY ir.id LIMIT 1) code,"
+        " (SELECT ir.method FROM incident_reasons ir WHERE ir.incident_id=i.id"
+        "   ORDER BY ir.id LIMIT 1) reason_method"
+        " FROM incidents i JOIN assets a ON a.id=i.asset_id"
+        " WHERE i.status IN ('open','resolving') AND i.department=?"
+        " ORDER BY i.opened_at", (cfg.department,))
+
+    live_offplan = offplan.active_map()
+    out = []
+    for r in rows:
+        down = round((clock.parse(now) - clock.parse(r["opened_at"])).total_seconds() / 60)
+        ticket = db.query_one(
+            "SELECT id, code, owner_role, owner_person, status, eta_hours, eta_due_at,"
+            " eta_by, eta_misses, first_notified_at FROM tickets"
+            " WHERE incident_id=? ORDER BY id DESC LIMIT 1", (r["id"],))
+
+        # Who is actually on the hook right now, resolved the same way the next page
+        # will resolve it — not the role name, which tells an operator nothing.
+        role = (ticket["owner_role"] if ticket else None) or _asking_role(cfg)
+        person = ticket["owner_person"] if ticket else None
+        who = (routing.resolve_people(cfg, [person]) if person
+               else routing.resolve(cfg, role, when_iso=now))
+
+        nxt = db.query_one(
+            "SELECT action, due_at, notify_role, notify_person FROM escalations"
+            " WHERE status='pending' AND (incident_id=? OR ticket_id=?)"
+            " ORDER BY due_at LIMIT 1",
+            (r["id"], ticket["id"] if ticket else -1))
+
+        promise = None
+        if ticket and ticket["eta_hours"]:
+            promise = {
+                "hours": ticket["eta_hours"], "due_at": ticket["eta_due_at"],
+                "by": ticket["eta_by"], "by_name": _person_name(cfg, ticket["eta_by"]),
+                "misses": ticket["eta_misses"] or 0,
+                "overdue": bool(ticket["eta_due_at"] and ticket["eta_due_at"] <= now),
+            }
+
+        out.append({
+            "incident_id": r["id"],
+            "asset_ref": r["asset_ref"],
+            "state": r["state"],
+            "status": r["status"],
+            "opened_at": r["opened_at"],
+            "minutes_down": down,
+            "shift": r["shift"],
+            "reopen_count": r["reopen_count"],
+            "in_service": bool(r["active"]),
+            "off_plan": bool(live_offplan.get(r["asset_id"])),
+            "reason": None if not r["code"] else {
+                "code": r["code"], "label": cfg.label(r["code"]),
+                "method": r["reason_method"],
+                "ticketable": bool(cfg.is_ticketable(r["code"])),
+            },
+            "ticket": None if not ticket else {
+                "id": ticket["id"], "status": ticket["status"],
+                "owner_role": ticket["owner_role"],
+                "assigned_person": ticket["owner_person"],
+            },
+            "owner": [{"person_id": x.person_id, "name": x.name,
+                       "channel": x.channel} for x in who],
+            "promise": promise,
+            "next_step": None if not nxt else {
+                "action": nxt["action"] or "reminder", "due_at": nxt["due_at"],
+                "role": nxt["notify_role"], "person": nxt["notify_person"],
+            },
+            "recurrence": _recurrence_for(cfg, r["asset_id"], r["code"]),
+        })
+    return jsonify({"asset_type": cfg.asset_type, "now": now, "incidents": out,
+                    "offplan_reasons": list(offplan.REASONS)})
+
+
+def _asking_role(cfg) -> str:
+    ladder = cfg.unknown_ladder or []
+    return ladder[0].get("notify") if ladder else (cfg.default_owner or "")
+
+
+def _person_name(cfg, pid):
+    return (cfg.people or {}).get(pid, {}).get("name", pid) if pid else None
+
+
+def _recurrence_for(cfg, asset_id: str, code: str | None) -> dict:
+    """How often this machine has had this fault lately.
+
+    A third occurrence in a shift is not three faults, it is one unfinished repair —
+    which is exactly what the escalation config already acts on, so the board should say
+    so rather than making somebody notice it.
+    """
+    rec = cfg.recurrence or {}
+    window = float(rec.get("window_hours", 8))
+    since = clock.plus_seconds(-window * 3600)
+    if code:
+        row = db.query_one(
+            "SELECT COUNT(*) n FROM incidents i JOIN incident_reasons ir"
+            " ON ir.incident_id=i.id WHERE i.asset_id=? AND ir.code=? AND i.opened_at>=?",
+            (asset_id, code, since))
+    else:
+        row = db.query_one(
+            "SELECT COUNT(*) n FROM incidents WHERE asset_id=? AND opened_at>=?",
+            (asset_id, since))
+    n = int(row["n"]) if row else 0
+    return {"count": n, "window_hours": window,
+            "threshold": int(rec.get("threshold", 0) or 0),
+            "repeating": bool(rec.get("threshold") and n >= int(rec["threshold"]))}
+
+
+@bp.get("/api/admin/incidents/<int:incident_id>/timeline")
+def incident_timeline(incident_id: int):
+    """Every question asked and every answer given about one incident, in order.
+
+    Including whether each message actually reached a phone. "Is he ignoring us?" and
+    "was he ever asked?" look identical from a desk, and the difference decides whether
+    you chase the man or fix the channel.
+    """
+    denied = _read_guard()
+    if denied:
+        return denied
+    cfg = _cfg()
+    inc = db.query_one("SELECT i.*, a.asset_ref FROM incidents i JOIN assets a"
+                       " ON a.id=i.asset_id WHERE i.id=?", (incident_id,))
+    if not inc:
+        return _err(404, "no such incident", incident_id=incident_id)
+    ticket = db.query_one("SELECT id FROM tickets WHERE incident_id=? ORDER BY id DESC"
+                          " LIMIT 1", (incident_id,))
+
+    entries = []
+    for e in db.query(
+            "SELECT at, kind, actor, detail FROM events"
+            " WHERE (entity='incident' AND entity_id=?)"
+            "    OR (entity='ticket' AND entity_id=?) ORDER BY at, id",
+            (incident_id, ticket["id"] if ticket else -1)):
+        entries.append({"at": e["at"], "kind": "event", "what": e["kind"],
+                        "actor": e["actor"], "detail": _loads(e["detail"])})
+
+    tags = [f"inc:{incident_id}:%"] + ([f"tkt:{ticket['id']}:%"] if ticket else [])
+    for tag in tags:
+        for m in db.query(
+                "SELECT recipient, payload, status, delivery_status, delivery_error,"
+                " sent_at, next_try_at FROM outbox WHERE dedupe_key LIKE ?"
+                " ORDER BY id", (tag,)):
+            p = _loads(m["payload"]) or {}
+            entries.append({
+                "at": m["sent_at"] or m["next_try_at"],
+                "kind": "sent", "what": p.get("type", "message"),
+                "to": m["recipient"], "text": p.get("text"),
+                "delivery": m["delivery_status"] or ("failed" if m["status"] == "failed"
+                                                     else "waiting"),
+                "error": m["delivery_error"],
+            })
+
+    for r in db.query(
+            "SELECT received_at, sender, body FROM inbound_raw"
+            " WHERE matched_incident_id=? OR matched_ticket_id=? ORDER BY id",
+            (incident_id, ticket["id"] if ticket else -1)):
+        body = _loads(r["body"]) or {}
+        entries.append({"at": r["received_at"], "kind": "reply", "what": "reply",
+                        "from": r["sender"],
+                        "text": body.get("message_in_raw") or body.get("message-in")})
+
+    entries.sort(key=lambda x: (x["at"] or ""))
+    return jsonify({"incident_id": incident_id, "asset_ref": inc["asset_ref"],
+                    "opened_at": inc["opened_at"], "entries": entries})
+
+
+def _loads(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+@bp.post("/api/admin/incidents/<int:incident_id>/reason")
+def set_incident_reason(incident_id: int):
+    """Record the reason somebody gave you in person.
+
+    The supervisor is standing in front of you, or told you on the radio. Without this
+    the only way in is a WhatsApp reply, so the system keeps asking a question that has
+    already been answered out loud.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    from ..core import incidents as inc_mod
+
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+    code = (body.get("code") or "").strip()
+    if not code or not any(c.get("code") == code for c in cfg.codes):
+        return _err(400, "unknown reason code", got=code,
+                    known=[c["code"] for c in cfg.codes])
+    inc = db.query_one("SELECT status FROM incidents WHERE id=?", (incident_id,))
+    if not inc:
+        return _err(404, "no such incident", incident_id=incident_id)
+    if inc["status"] not in ("open", "resolving"):
+        return _err(409, "that incident is already resolved", status=inc["status"])
+    if db.query_one("SELECT COUNT(*) n FROM incident_reasons WHERE incident_id=?",
+                    (incident_id,))["n"]:
+        return _err(409, "a reason is already recorded for this incident")
+
+    inc_mod.set_reason(cfg, incident_id, code, subcode=(body.get("subcode") or None),
+                       method="panel", actor=_actor())
+    ticket = db.query_one("SELECT id, owner_role FROM tickets WHERE incident_id=?"
+                          " ORDER BY id DESC LIMIT 1", (incident_id,))
+    return jsonify({"ok": True, "incident_id": incident_id, "code": code,
+                    "label": cfg.label(code),
+                    "ticket": None if not ticket else
+                    {"id": ticket["id"], "owner_role": ticket["owner_role"]}}), 200
+
+
+@bp.post("/api/admin/incidents/<int:incident_id>/assign")
+def assign_incident(incident_id: int):
+    """Send this one fault to a named person, without touching the roster.
+
+    Roles are what survive somebody leaving, so they stay the default. But a live fault
+    sometimes belongs to a specific man — he is already at that loom, or the one on shift
+    has just said it is not his job — and rewriting the rota to say so would change
+    every other fault too.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    body = request.get_json(silent=True) or {}
+    pid = (body.get("person") or "").strip()
+    people = cfg.people or {}
+    if pid and pid not in people:
+        return _err(400, "unknown person", got=pid, known=sorted(people))
+    inc = db.query_one("SELECT status FROM incidents WHERE id=?", (incident_id,))
+    if not inc:
+        return _err(404, "no such incident", incident_id=incident_id)
+
+    ticket = db.query_one("SELECT id FROM tickets WHERE incident_id=? AND status<>'closed'"
+                          " ORDER BY id DESC LIMIT 1", (incident_id,))
+    now = clock.now_iso()
+    with db.transaction() as c:
+        # Pending rungs carry the person so the NEXT message goes to them, and the
+        # ticket carries it so every rung after that inherits it.
+        c.execute("UPDATE escalations SET notify_person=? WHERE status='pending'"
+                  " AND (incident_id=? OR ticket_id=?)",
+                  (pid or None, incident_id, ticket["id"] if ticket else -1))
+        if ticket:
+            c.execute("UPDATE tickets SET owner_person=? WHERE id=?",
+                      (pid or None, ticket["id"]))
+        events.log(c, "incident", incident_id, "assigned", actor=_actor(),
+                   detail={"person": pid or None}, department=cfg.department, at=now)
+    return jsonify({"ok": True, "incident_id": incident_id,
+                    "assigned_to": pid or None,
+                    "name": _person_name(cfg, pid)}), 200
+
+
+@bp.post("/api/admin/incidents/<int:incident_id>/remind")
+def remind_now(incident_id: int):
+    """Send the next message now instead of when the timer says.
+
+    Not an extra message — the one already scheduled, brought forward. Queuing a second
+    kind of reminder would mean two ways to be told the same thing and two things to
+    keep consistent.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    cfg = _cfg()
+    inc = db.query_one("SELECT status FROM incidents WHERE id=?", (incident_id,))
+    if not inc:
+        return _err(404, "no such incident", incident_id=incident_id)
+    if inc["status"] not in ("open", "resolving"):
+        return _err(409, "that incident is already resolved", status=inc["status"])
+
+    ticket = db.query_one("SELECT id FROM tickets WHERE incident_id=? AND status<>'closed'"
+                          " ORDER BY id DESC LIMIT 1", (incident_id,))
+    now = clock.now_iso()
+    with db.transaction() as c:
+        n = c.execute(
+            "UPDATE escalations SET due_at=? WHERE status='pending' AND due_at>?"
+            " AND (incident_id=? OR ticket_id=?)",
+            (now, now, incident_id, ticket["id"] if ticket else -1)).rowcount
+        if n:
+            events.log(c, "incident", incident_id, "reminded", actor=_actor(),
+                       detail={"brought_forward": n}, department=cfg.department, at=now)
+    if not n:
+        return _err(409, "nothing is scheduled for this incident to bring forward",
+                    hint="it may already be due, or the ladder may have finished")
+    return jsonify({"ok": True, "incident_id": incident_id, "brought_forward": n,
+                    "note": "goes out on the next tick, within 30 seconds"}), 200
+
+
+@bp.post("/api/admin/assets/<asset_ref>/decommission")
+def decommission_asset(asset_ref: str):
+    """Retire a machine for good.
+
+    Different from off plan, which expires on purpose. This one has no end date, so it
+    is deliberately harder to undo by accident: the machine stops being counted, stops
+    being asked about, and stops appearing in the fleet arithmetic that decides what
+    'the whole fleet stopped' means.
+    """
+    ok, why = _authorised()
+    if not ok:
+        return _err(403, why)
+    from ..core import incidents as inc_mod
+
+    cfg = _cfg()
+    try:
+        aid = inc_mod.asset_id_for(cfg, asset_ref)
+    except Exception:
+        return _err(404, "no such asset", asset_ref=asset_ref)
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        return _err(400, "decommissioning needs confirm:true",
+                    hint="this has no end date — use off plan for a machine that is "
+                         "coming back")
+
+    now = clock.now_iso()
+    actor = _actor()
+    closed = 0
+    with db.transaction() as c:
+        c.execute("UPDATE assets SET active=0 WHERE id=?", (aid,))
+        rows = c.execute("SELECT id FROM incidents WHERE asset_id=?"
+                         " AND status IN ('open','resolving')", (aid,)).fetchall()
+        for r in rows:
+            c.execute("UPDATE incidents SET status='resolved', resolved_at=?"
+                      " WHERE id=?", (now, r["id"]))
+            c.execute("UPDATE escalations SET status='cancelled'"
+                      " WHERE status='pending' AND incident_id=?", (r["id"],))
+            t = c.execute("SELECT id FROM tickets WHERE incident_id=? AND status<>'closed'",
+                          (r["id"],)).fetchone()
+            if t:
+                c.execute("UPDATE tickets SET status='closed', closed_at=?,"
+                          " close_reason='decommissioned' WHERE id=?", (now, t["id"]))
+                c.execute("UPDATE escalations SET status='cancelled'"
+                          " WHERE status='pending' AND ticket_id=?", (t["id"],))
+            events.log(c, "incident", r["id"], "resolved", actor=actor,
+                       detail={"close_reason": "decommissioned"},
+                       department=cfg.department, at=now)
+            closed += 1
+        events.log(c, "asset", 0, "decommissioned", actor=actor,
+                   detail={"asset_ref": asset_ref, "note": body.get("note")},
+                   department=cfg.department, at=now)
+    return jsonify({"ok": True, "asset_ref": asset_ref, "in_service": False,
+                    "incidents_closed": closed}), 200
+
 
 @bp.get("/api/admin/report")
 def accountability_report():

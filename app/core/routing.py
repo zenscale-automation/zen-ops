@@ -57,6 +57,16 @@ def resolve(cfg: "config.Config", role: str, when_iso: str | None = None,
     return []
 
 
+def resolve_people(cfg: "config.Config", person_ids) -> list[Recipient]:
+    """Named people, bypassing role and shift entirely.
+
+    Used when a human has assigned one live fault to one person. Unknown ids are dropped
+    rather than invented, so the caller can tell nobody was reachable and fall back to
+    the role instead of paging nobody.
+    """
+    return _as_recipients(cfg, [p for p in person_ids if p in (cfg.people or {})])
+
+
 def _as_recipients(cfg: "config.Config", person_ids) -> list[Recipient]:
     out: list[Recipient] = []
     for pid in person_ids:

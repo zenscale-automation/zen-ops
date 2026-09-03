@@ -26,14 +26,31 @@ log = logging.getLogger("ops.escalation")
 # --- scheduling ------------------------------------------------------------
 
 def _insert_rung(c, *, ticket_id, incident_id, rung, notify_role, action, due_at,
-                 trigger) -> int:
+                 trigger, notify_person=None) -> int:
     cur = c.execute(
         "INSERT INTO escalations"
         "(ticket_id, incident_id, rung, notify_role, action, due_at, fired_at,"
-        " status, `trigger`) VALUES (?,?,?,?,?,?,NULL,'pending',?)",
-        (ticket_id, incident_id, rung, notify_role, action, due_at, trigger),
+        " status, `trigger`, notify_person) VALUES (?,?,?,?,?,?,NULL,'pending',?,?)",
+        (ticket_id, incident_id, rung, notify_role, action, due_at, trigger,
+         notify_person),
     )
     return cur.lastrowid
+
+
+def _assigned_person(c, esc_row) -> str | None:
+    """A person named on this rung, or inherited from the ticket it belongs to.
+
+    Set only by a human reassigning one live fault. The ladders never write it, so the
+    default everywhere is the role — which is what survives somebody leaving.
+    """
+    if esc_row.get("notify_person"):
+        return esc_row["notify_person"]
+    if esc_row["ticket_id"]:
+        row = c.execute("SELECT owner_person FROM tickets WHERE id=?",
+                        (esc_row["ticket_id"],)).fetchone()
+        if row and row["owner_person"]:
+            return row["owner_person"]
+    return None
 
 
 def schedule_unknown(c, cfg: "config.Config", incident_row) -> None:
@@ -123,7 +140,7 @@ def _schedule_next(c, cfg: "config.Config", esc_row, base_iso: str, ladder: list
         _insert_rung(
             c, ticket_id=esc_row["ticket_id"], incident_id=esc_row["incident_id"],
             rung=nxt, notify_role=rung["notify"], action=rung.get("action"),
-            due_at=due, trigger="timer",
+            due_at=due, trigger="timer", notify_person=esc_row.get("notify_person"),
         )
         return
 
@@ -150,7 +167,7 @@ def _schedule_next(c, cfg: "config.Config", esc_row, base_iso: str, ladder: list
     _insert_rung(
         c, ticket_id=esc_row["ticket_id"], incident_id=esc_row["incident_id"],
         rung=esc_row["rung"], notify_role=last["notify"], action=last.get("action"),
-        due_at=due, trigger="repeat",
+        due_at=due, trigger="repeat", notify_person=esc_row.get("notify_person"),
     )
 
 
@@ -299,8 +316,17 @@ def fire(c, cfg: "config.Config", esc_row) -> None:
     asset = c.execute("SELECT * FROM assets WHERE id=?", (incident["asset_id"],)).fetchone()
     asset_ref = asset["asset_ref"] if asset else incident["asset_id"]
 
-    recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
-                                 owner_role=owner_role)
+    assigned = _assigned_person(c, esc_row)
+    if assigned:
+        recipients = routing.resolve_people(cfg, [assigned])
+        if not recipients:
+            log.warning("rung %s is assigned to '%s', who is not in the roster — "
+                        "falling back to the role", esc_row["id"], assigned)
+    else:
+        recipients = []
+    if not recipients:
+        recipients = routing.resolve(cfg, esc_row["notify_role"], when_iso=now,
+                                     owner_role=owner_role)
     action = esc_row["action"]
     # Captured before the eta_check branch below rewrites both `action` and `esc_row`:
     # the scheduling of the NEXT rung depends on what this rung originally was.
