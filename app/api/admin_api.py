@@ -1233,8 +1233,8 @@ def list_open_incidents():
     cfg = _cfg()
     now = clock.now_iso()
     rows = db.query(
-        "SELECT i.id, i.asset_id, i.state, i.status, i.opened_at, i.shift,"
-        " i.reopen_count, a.asset_ref, a.active,"
+        "SELECT i.id, i.asset_id, i.`condition`, i.status, i.opened_at, i.shift,"
+        " a.asset_ref, a.active,"
         " (SELECT ir.code FROM incident_reasons ir WHERE ir.incident_id=i.id"
         "   ORDER BY ir.id LIMIT 1) code,"
         " (SELECT ir.method FROM incident_reasons ir WHERE ir.incident_id=i.id"
@@ -1277,12 +1277,11 @@ def list_open_incidents():
         out.append({
             "incident_id": r["id"],
             "asset_ref": r["asset_ref"],
-            "state": r["state"],
+            "state": r["condition"],
             "status": r["status"],
             "opened_at": r["opened_at"],
             "minutes_down": down,
             "shift": r["shift"],
-            "reopen_count": r["reopen_count"],
             "in_service": bool(r["active"]),
             "off_plan": bool(live_offplan.get(r["asset_id"])),
             "reason": None if not r["code"] else {
